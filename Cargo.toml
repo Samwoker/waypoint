@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/data",
+    "crates/domain",
+    "crates/api",
+    "crates/worker",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = []
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Internal workspace crates
+relay_core = { path = "crates/core" }
+data = { path = "crates/data" }
+domain = { path = "crates/domain" }
+
+# Serialization & Data types
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error & Logging
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Config & Environment
+config = "0.14"
+dotenvy = "0.15"
+validator = { version = "0.18", features = ["derive"] }
+
+# Cryptography & Security
+aes-gcm = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2.6"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+argon2 = "0.5"
+jsonwebtoken = "9.3"
+
+# Database & Cache
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "migrate",
+    "macros",
+] }
+redis = { version = "0.26", features = ["tokio-comp", "streams", "connection-manager"] }
+
+# Async runtime & HTTP client
+tokio = { version = "1.40", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+backoff = { version = "0.4", features = ["tokio"] }
+
+# Web / HTTP Framework
+axum = { version = "0.7", features = ["macros"] }
+axum-extra = { version = "0.9", features = ["typed-header", "cookie"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.5", features = [
+    "trace",
+    "cors",
+    "compression-gzip",
+    "request-id",
+    "timeout",
+] }
+tower_governor = "0.4"
