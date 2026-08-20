@@ -257,4 +257,38 @@ impl<'a> SubscriptionRepository<'a> {
 
         Ok(())
     }
+
+    pub async fn count_active_by_source(&self, tenant_id: Uuid, source_id: Uuid) -> Result<i64, CoreError> {
+        let count = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM subscriptions
+            WHERE tenant_id = $1 AND source_id = $2 AND status = 'active'
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(source_id)
+        .fetch_one(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error counting subscriptions for source: {e}")))?;
+
+        Ok(count)
+    }
+
+    pub async fn disable_by_source(&self, tenant_id: Uuid, source_id: Uuid) -> Result<u64, CoreError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE subscriptions
+            SET status = 'disabled', updated_at = NOW()
+            WHERE tenant_id = $1 AND source_id = $2 AND status = 'active'
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(source_id)
+        .execute(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error disabling subscriptions for source: {e}")))?;
+
+        Ok(result.rows_affected())
+    }
 }

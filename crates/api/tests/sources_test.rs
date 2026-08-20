@@ -1183,3 +1183,235 @@ async fn test_patch_source_unauthorized() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
+
+// 8. DELETE /sources/{source_id} tests
+#[tokio::test]
+async fn test_delete_source_with_no_subscriptions() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "del-no-sub").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Delete Me Source".to_string(),
+                slug: format!("del-no-sub-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}", source.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    // Verify source is now gone (404)
+    let req_get = Request::builder()
+        .uri(format!("/sources/{}", source.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_get = app.oneshot(req_get).await.unwrap();
+    assert_eq!(res_get.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_source_with_active_subscriptions_without_force_fails() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "del-sub-err").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Active Sub Source".to_string(),
+                slug: format!("active-sub-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let destination = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            domain::dto::CreateDestinationInput {
+                name: "Dest 1".to_string(),
+                url: "https://api.example.com/webhooks".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                secret: None,
+                max_retries: None,
+                headers: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            domain::dto::CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: destination.id,
+                event_types: vec!["payment.created".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // 1. DELETE /sources/{id} without force -> 409 Conflict
+    let req = Request::builder()
+        .uri(format!("/sources/{}", source.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(json_res["error"]["message"].as_str().unwrap().contains("active subscription"));
+
+    // 2. DELETE /sources/{id}?force=false -> 409 Conflict
+    let req_force_false = Request::builder()
+        .uri(format!("/sources/{}?force=false", source.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_force_false = app.clone().oneshot(req_force_false).await.unwrap();
+    assert_eq!(res_force_false.status(), StatusCode::CONFLICT);
+
+    // 3. DELETE /sources/{id}?force=true -> 204 No Content
+    let req_force_true = Request::builder()
+        .uri(format!("/sources/{}?force=true", source.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_force_true = app.clone().oneshot(req_force_true).await.unwrap();
+    assert_eq!(res_force_true.status(), StatusCode::NO_CONTENT);
+
+    // Verify source is now soft-deleted (404)
+    let req_get = Request::builder()
+        .uri(format!("/sources/{}", source.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_get = app.oneshot(req_get).await.unwrap();
+    assert_eq!(res_get.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_source_nonexistent() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (_tenant_id, raw_key) = create_test_tenant_and_key(&state, "del-none").await;
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}", Uuid::new_v4()))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_source_cross_tenant() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_a, _key_a) = create_test_tenant_and_key(&state, "del-iso-a").await;
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "del-iso-b").await;
+
+    let source_a = state
+        .source_service
+        .create_source(
+            tenant_a,
+            CreateSourceInput {
+                name: "Tenant A Source".to_string(),
+                slug: format!("ta-del-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}", source_a.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_source_unauthorized() {
+    let (app, _state, _pool) = setup_test_app().await;
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}", Uuid::new_v4()))
+        .method("DELETE")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_delete_source_database_failure() {
+    let (_app, state, _pool) = setup_test_app().await;
+    let (tenant_id, _) = create_test_tenant_and_key(&state, "del-db-err").await;
+
+    let invalid_pool = Arc::new(
+        sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(10))
+            .connect_lazy("postgres://invalid:invalid@localhost:9999/nonexistent")
+            .unwrap(),
+    );
+    let broken_source_service = domain::services::SourceService::new(invalid_pool, [0u8; 32]);
+
+    let res = broken_source_service.delete_source(tenant_id, Uuid::new_v4(), false).await;
+    assert!(res.is_err());
+    match res.unwrap_err() {
+        relay_core::error::CoreError::Internal(msg) => {
+            assert!(msg.contains("Database error") || msg.contains("connection"));
+        }
+        err => panic!("Expected CoreError::Internal, got {:?}", err),
+    }
+}

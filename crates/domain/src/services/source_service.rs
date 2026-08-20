@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use data::repositories::SourceRepository;
+use data::repositories::{SourceRepository, SubscriptionRepository};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -212,9 +212,29 @@ impl SourceService {
         })
     }
 
-    pub async fn delete_source(&self, tenant_id: Uuid, id: Uuid) -> Result<(), CoreError> {
-        let repo = SourceRepository::new(&self.pool);
-        repo.delete(tenant_id, id).await
+    pub async fn delete_source(&self, tenant_id: Uuid, id: Uuid, force: bool) -> Result<(), CoreError> {
+        let source_repo = SourceRepository::new(&self.pool);
+        // Verify source belongs to tenant and exists
+        let _source = source_repo
+            .find_by_tenant_and_id(tenant_id, id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Source '{id}' not found")))?;
+
+        // Count active subscriptions referencing this source
+        let sub_repo = SubscriptionRepository::new(&self.pool);
+        let active_count = sub_repo.count_active_by_source(tenant_id, id).await?;
+
+        if active_count > 0 && !force {
+            return Err(CoreError::Conflict(format!(
+                "Cannot delete source with {active_count} active subscription(s). Use force=true to delete anyway."
+            )));
+        }
+
+        if active_count > 0 && force {
+            sub_repo.disable_by_source(tenant_id, id).await?;
+        }
+
+        source_repo.delete(tenant_id, id).await
     }
 }
 

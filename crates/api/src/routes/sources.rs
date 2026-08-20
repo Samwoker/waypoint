@@ -86,14 +86,21 @@ pub async fn update_source(
     Ok((StatusCode::OK, Json(source)))
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct DeleteSourceQuery {
+    pub force: Option<bool>,
+}
+
 pub async fn delete_source(
     tenant: AuthenticatedTenant,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    Query(query): Query<DeleteSourceQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let force = query.force.unwrap_or(false);
     state
         .source_service
-        .delete_source(tenant.tenant_id, id)
+        .delete_source(tenant.tenant_id, id, force)
         .await
         .map_err(ApiError)?;
 
