@@ -128,6 +128,19 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/destinations/:id/health", get(destinations::get_destination_health))
         // Subscriptions API
         .route(
+            "/subscriptions",
+            get(subscriptions::list_subscriptions).post(subscriptions::create_subscription),
+        )
+        .route(
+            "/subscriptions/:id",
+            get(subscriptions::get_subscription)
+                .put(subscriptions::update_subscription)
+                .patch(subscriptions::update_subscription)
+                .delete(subscriptions::delete_subscription),
+        )
+        .route("/subscriptions/:id/pause", post(subscriptions::pause_subscription))
+        .route("/subscriptions/:id/resume", post(subscriptions::resume_subscription))
+        .route(
             "/v1/subscriptions",
             get(subscriptions::list_subscriptions).post(subscriptions::create_subscription),
         )
@@ -135,6 +148,7 @@ pub fn create_router(state: AppState) -> Router {
             "/v1/subscriptions/:id",
             get(subscriptions::get_subscription)
                 .put(subscriptions::update_subscription)
+                .patch(subscriptions::update_subscription)
                 .delete(subscriptions::delete_subscription),
         )
         .route("/v1/subscriptions/:id/pause", post(subscriptions::pause_subscription))
@@ -147,6 +161,7 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/subscriptions/:id",
             get(subscriptions::get_subscription)
                 .put(subscriptions::update_subscription)
+                .patch(subscriptions::update_subscription)
                 .delete(subscriptions::delete_subscription),
         )
         .route("/api/v1/subscriptions/:id/pause", post(subscriptions::pause_subscription))

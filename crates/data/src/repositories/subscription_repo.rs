@@ -18,18 +18,22 @@ impl<'a> SubscriptionRepository<'a> {
         let row = sqlx::query_as::<_, Subscription>(
             r#"
             SELECT
-                id,
-                tenant_id,
-                source_id,
-                destination_id,
-                event_types,
-                filter AS filter_rules,
+                s.id,
+                s.tenant_id,
+                s.source_id,
+                s.destination_id,
+                s.event_types,
+                s.filter AS filter_rules,
                 NULL::TEXT AS transformation_template,
-                (status = 'active') AS is_active,
-                created_at,
-                updated_at
-            FROM subscriptions
-            WHERE id = $1 AND status != 'deleted'
+                (s.status = 'active') AS is_active,
+                src.name AS source_name,
+                dest.name AS destination_name,
+                s.created_at,
+                s.updated_at
+            FROM subscriptions s
+            LEFT JOIN sources src ON src.id = s.source_id
+            LEFT JOIN destinations dest ON dest.id = s.destination_id
+            WHERE s.id = $1 AND s.status != 'deleted'
             "#,
         )
         .bind(id)
@@ -44,18 +48,22 @@ impl<'a> SubscriptionRepository<'a> {
         let row = sqlx::query_as::<_, Subscription>(
             r#"
             SELECT
-                id,
-                tenant_id,
-                source_id,
-                destination_id,
-                event_types,
-                filter AS filter_rules,
+                s.id,
+                s.tenant_id,
+                s.source_id,
+                s.destination_id,
+                s.event_types,
+                s.filter AS filter_rules,
                 NULL::TEXT AS transformation_template,
-                (status = 'active') AS is_active,
-                created_at,
-                updated_at
-            FROM subscriptions
-            WHERE tenant_id = $1 AND id = $2 AND status != 'deleted'
+                (s.status = 'active') AS is_active,
+                src.name AS source_name,
+                dest.name AS destination_name,
+                s.created_at,
+                s.updated_at
+            FROM subscriptions s
+            LEFT JOIN sources src ON src.id = s.source_id
+            LEFT JOIN destinations dest ON dest.id = s.destination_id
+            WHERE s.tenant_id = $1 AND s.id = $2 AND s.status != 'deleted'
             "#,
         )
         .bind(tenant_id)
@@ -67,23 +75,64 @@ impl<'a> SubscriptionRepository<'a> {
         Ok(row)
     }
 
+    pub async fn find_by_source_and_destination(
+        &self,
+        tenant_id: Uuid,
+        source_id: Uuid,
+        destination_id: Uuid,
+    ) -> Result<Option<Subscription>, CoreError> {
+        let row = sqlx::query_as::<_, Subscription>(
+            r#"
+            SELECT
+                s.id,
+                s.tenant_id,
+                s.source_id,
+                s.destination_id,
+                s.event_types,
+                s.filter AS filter_rules,
+                NULL::TEXT AS transformation_template,
+                (s.status = 'active') AS is_active,
+                src.name AS source_name,
+                dest.name AS destination_name,
+                s.created_at,
+                s.updated_at
+            FROM subscriptions s
+            LEFT JOIN sources src ON src.id = s.source_id
+            LEFT JOIN destinations dest ON dest.id = s.destination_id
+            WHERE s.tenant_id = $1 AND s.source_id = $2 AND s.destination_id = $3 AND s.status != 'deleted'
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(source_id)
+        .bind(destination_id)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error checking subscription existence: {e}")))?;
+
+        Ok(row)
+    }
+
     pub async fn list_by_source(&self, source_id: Uuid) -> Result<Vec<Subscription>, CoreError> {
         let rows = sqlx::query_as::<_, Subscription>(
             r#"
             SELECT
-                id,
-                tenant_id,
-                source_id,
-                destination_id,
-                event_types,
-                filter AS filter_rules,
+                s.id,
+                s.tenant_id,
+                s.source_id,
+                s.destination_id,
+                s.event_types,
+                s.filter AS filter_rules,
                 NULL::TEXT AS transformation_template,
-                (status = 'active') AS is_active,
-                created_at,
-                updated_at
-            FROM subscriptions
-            WHERE source_id = $1 AND status = 'active'
-            ORDER BY created_at ASC
+                (s.status = 'active') AS is_active,
+                src.name AS source_name,
+                dest.name AS destination_name,
+                s.created_at,
+                s.updated_at
+            FROM subscriptions s
+            LEFT JOIN sources src ON src.id = s.source_id
+            LEFT JOIN destinations dest ON dest.id = s.destination_id
+            WHERE s.source_id = $1 AND s.status = 'active'
+            ORDER BY s.created_at ASC
             "#,
         )
         .bind(source_id)
@@ -98,19 +147,23 @@ impl<'a> SubscriptionRepository<'a> {
         let rows = sqlx::query_as::<_, Subscription>(
             r#"
             SELECT
-                id,
-                tenant_id,
-                source_id,
-                destination_id,
-                event_types,
-                filter AS filter_rules,
+                s.id,
+                s.tenant_id,
+                s.source_id,
+                s.destination_id,
+                s.event_types,
+                s.filter AS filter_rules,
                 NULL::TEXT AS transformation_template,
-                (status = 'active') AS is_active,
-                created_at,
-                updated_at
-            FROM subscriptions
-            WHERE tenant_id = $1 AND status != 'deleted'
-            ORDER BY created_at DESC
+                (s.status = 'active') AS is_active,
+                src.name AS source_name,
+                dest.name AS destination_name,
+                s.created_at,
+                s.updated_at
+            FROM subscriptions s
+            LEFT JOIN sources src ON src.id = s.source_id
+            LEFT JOIN destinations dest ON dest.id = s.destination_id
+            WHERE s.tenant_id = $1 AND s.status != 'deleted'
+            ORDER BY s.created_at DESC
             LIMIT $2 OFFSET $3
             "#,
         )
@@ -132,6 +185,8 @@ impl<'a> SubscriptionRepository<'a> {
         event_types: Vec<String>,
         filter_rules: Option<serde_json::Value>,
         _transformation_template: Option<&str>,
+        source_name: Option<String>,
+        destination_name: Option<String>,
     ) -> Result<Subscription, CoreError> {
         let id = Uuid::new_v4();
 
@@ -151,6 +206,8 @@ impl<'a> SubscriptionRepository<'a> {
                 filter AS filter_rules,
                 NULL::TEXT AS transformation_template,
                 (status = 'active') AS is_active,
+                $7 AS source_name,
+                $8 AS destination_name,
                 created_at,
                 updated_at
             "#,
@@ -161,6 +218,8 @@ impl<'a> SubscriptionRepository<'a> {
         .bind(destination_id)
         .bind(&event_types)
         .bind(filter_rules)
+        .bind(source_name)
+        .bind(destination_name)
         .fetch_one(self.pool)
         .await
         .map_err(|e| {
@@ -193,12 +252,12 @@ impl<'a> SubscriptionRepository<'a> {
         let new_filter = filter_rules.or(existing.filter_rules);
         let new_status = match is_active {
             Some(true) => "active",
-            Some(false) => "inactive",
+            Some(false) => "disabled",
             None => {
                 if existing.is_active {
                     "active"
                 } else {
-                    "inactive"
+                    "disabled"
                 }
             }
         };
@@ -221,6 +280,8 @@ impl<'a> SubscriptionRepository<'a> {
                 filter AS filter_rules,
                 NULL::TEXT AS transformation_template,
                 (status = 'active') AS is_active,
+                $6 AS source_name,
+                $7 AS destination_name,
                 created_at,
                 updated_at
             "#,
@@ -230,6 +291,8 @@ impl<'a> SubscriptionRepository<'a> {
         .bind(new_status)
         .bind(tenant_id)
         .bind(id)
+        .bind(existing.source_name)
+        .bind(existing.destination_name)
         .fetch_one(self.pool)
         .await
         .map_err(|e| CoreError::Internal(format!("Database error updating subscription: {e}")))?;

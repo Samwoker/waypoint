@@ -145,6 +145,7 @@ pub struct DestinationHealthView {
 pub struct CreateSubscriptionInput {
     pub source_id: Uuid,
     pub destination_id: Uuid,
+    #[serde(alias = "event_type_filter")]
     pub event_types: Vec<String>,
     pub filter_rules: Option<serde_json::Value>,
     pub transformation_template: Option<String>,
@@ -152,6 +153,7 @@ pub struct CreateSubscriptionInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateSubscriptionInput {
+    #[serde(alias = "event_type_filter")]
     pub event_types: Option<Vec<String>>,
     pub filter_rules: Option<serde_json::Value>,
     pub transformation_template: Option<String>,
@@ -164,8 +166,14 @@ pub struct SubscriptionView {
     pub tenant_id: Uuid,
     pub source_id: Uuid,
     pub destination_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_name: Option<String>,
     pub event_types: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filter_rules: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transformation_template: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,

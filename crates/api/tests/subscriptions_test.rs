@@ -150,9 +150,27 @@ async fn test_successful_subscription_creation() {
     );
 
     // Also verify /api/v1/subscriptions alias works
+    let dest2 = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Second Destination".to_string(),
+                url: "https://api.customer2.com/webhooks".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                secret: None,
+                max_retries: None,
+                headers: None,
+            },
+        )
+        .await
+        .unwrap();
+
     let payload2 = json!({
         "source_id": source.id,
-        "destination_id": dest.id,
+        "destination_id": dest2.id,
         "event_types": ["*"]
     });
 
@@ -589,19 +607,6 @@ async fn test_get_subscriptions_returns_tenant_subscriptions() {
     let (app, state, _pool) = setup_test_app().await;
     let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "get-subs").await;
 
-    let source = state
-        .source_service
-        .create_source(tenant_id, CreateSourceInput {
-            name: "Shared Source".to_string(),
-            slug: format!("src-{}", Uuid::new_v4().simple()),
-            description: None,
-            provider: "generic".to_string(),
-            verification_type: "none".to_string(),
-            secret: None,
-        })
-        .await
-        .unwrap();
-
     let dest = state
         .destination_service
         .create_destination(tenant_id, CreateDestinationInput {
@@ -619,12 +624,25 @@ async fn test_get_subscriptions_returns_tenant_subscriptions() {
 
     // Create 3 subscriptions
     for i in 1..=3 {
+        let src_i = state
+            .source_service
+            .create_source(tenant_id, CreateSourceInput {
+                name: format!("Shared Source {i}"),
+                slug: format!("src-{i}-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            })
+            .await
+            .unwrap();
+
         let _ = state
             .subscription_service
             .create_subscription(
                 tenant_id,
                 CreateSubscriptionInput {
-                    source_id: source.id,
+                    source_id: src_i.id,
                     destination_id: dest.id,
                     event_types: vec![format!("event.type.{i}")],
                     filter_rules: Some(json!({"index": i})),
@@ -653,7 +671,6 @@ async fn test_get_subscriptions_returns_tenant_subscriptions() {
     assert_eq!(list.len(), 3);
     for item in list {
         assert_eq!(item["tenant_id"], tenant_id.to_string());
-        assert_eq!(item["source_id"], source.id.to_string());
         assert_eq!(item["destination_id"], dest.id.to_string());
         assert_eq!(item["is_active"], true);
     }
@@ -854,3 +871,464 @@ async fn test_get_subscriptions_database_failure() {
         err => panic!("Expected CoreError::Internal, got {:?}", err),
     }
 }
+
+// 6. GET /subscriptions with names (Endpoint #34)
+#[tokio::test]
+async fn test_get_subscriptions_includes_source_and_destination_names() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "get-sub-names").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Stripe Source Named".to_string(),
+                slug: format!("stripe-nm-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "stripe".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Analytics Endpoint Named".to_string(),
+                url: "https://analytics.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["payment.created".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri("/subscriptions")
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let arr = json_res.as_array().unwrap();
+
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], sub.id.to_string());
+    assert_eq!(arr[0]["source_name"], "Stripe Source Named");
+    assert_eq!(arr[0]["destination_name"], "Analytics Endpoint Named");
+}
+
+// 7. POST /subscriptions with event_type_filter and 409 duplicate check (Endpoint #35)
+#[tokio::test]
+async fn test_post_subscription_event_type_filter_and_duplicate_conflict() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "post-sub-filter").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Billing Source".to_string(),
+                slug: format!("bill-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "stripe".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Accounting Sink".to_string(),
+                url: "https://acct.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // 1. Create using event_type_filter
+    let req1 = Request::builder()
+        .uri("/subscriptions")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::from(
+            json!({
+                "source_id": source.id,
+                "destination_id": dest.id,
+                "event_type_filter": ["invoice.paid", "charge.refunded"]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let res1 = app.clone().oneshot(req1).await.unwrap();
+    assert_eq!(res1.status(), StatusCode::CREATED);
+
+    let body_bytes = axum::body::to_bytes(res1.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json_res["source_id"], source.id.to_string());
+    assert_eq!(json_res["destination_id"], dest.id.to_string());
+    assert_eq!(json_res["source_name"], "Billing Source");
+    assert_eq!(json_res["destination_name"], "Accounting Sink");
+    let et_arr = json_res["event_types"].as_array().unwrap();
+    assert_eq!(et_arr.len(), 2);
+
+    // 2. Duplicate binding attempt -> 409 Conflict
+    let req_dup = Request::builder()
+        .uri("/subscriptions")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::from(
+            json!({
+                "source_id": source.id,
+                "destination_id": dest.id,
+                "event_type_filter": ["customer.created"]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let res_dup = app.oneshot(req_dup).await.unwrap();
+    assert_eq!(res_dup.status(), StatusCode::CONFLICT);
+}
+
+// 8. GET /subscriptions/{subscription_id} (Endpoint #36)
+#[tokio::test]
+async fn test_get_subscription_by_id_with_names_and_isolation() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_a, key_a) = create_test_tenant_and_key(&state, "sub-by-id-a").await;
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "sub-by-id-b").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_a,
+            CreateSourceInput {
+                name: "Source Alpha".to_string(),
+                slug: format!("alpha-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_a,
+            CreateDestinationInput {
+                name: "Dest Alpha".to_string(),
+                url: "https://alpha.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_a,
+            CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["alpha.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // 1. Successful lookup by owner
+    let req_ok = Request::builder()
+        .uri(format!("/subscriptions/{}", sub.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {key_a}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_ok = app.clone().oneshot(req_ok).await.unwrap();
+    assert_eq!(res_ok.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(res_ok.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json_res["id"], sub.id.to_string());
+    assert_eq!(json_res["source_name"], "Source Alpha");
+    assert_eq!(json_res["destination_name"], "Dest Alpha");
+
+    // 2. Cross-tenant lookup returns 404
+    let req_cross = Request::builder()
+        .uri(format!("/subscriptions/{}", sub.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_cross = app.clone().oneshot(req_cross).await.unwrap();
+    assert_eq!(res_cross.status(), StatusCode::NOT_FOUND);
+
+    // 3. Nonexistent returns 404
+    let req_none = Request::builder()
+        .uri(format!("/subscriptions/{}", Uuid::new_v4()))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {key_a}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_none = app.clone().oneshot(req_none).await.unwrap();
+    assert_eq!(res_none.status(), StatusCode::NOT_FOUND);
+
+    // 4. Unauthenticated returns 401
+    let req_unauth = Request::builder()
+        .uri(format!("/subscriptions/{}", sub.id))
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let res_unauth = app.oneshot(req_unauth).await.unwrap();
+    assert_eq!(res_unauth.status(), StatusCode::UNAUTHORIZED);
+}
+
+// 9. PATCH /subscriptions/{subscription_id} (Endpoint #37)
+#[tokio::test]
+async fn test_patch_subscription_filters_and_pause_activation() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "patch-sub").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Patch Sub Source".to_string(),
+                slug: format!("psub-src-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Patch Sub Dest".to_string(),
+                url: "https://psub.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["initial.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // 1. Partial update: change event_type_filter and deactivate
+    let patch_payload = json!({
+        "event_type_filter": ["updated.event.1", "updated.event.2"],
+        "is_active": false
+    });
+
+    let req = Request::builder()
+        .uri(format!("/subscriptions/{}", sub.id))
+        .method("PATCH")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::from(patch_payload.to_string()))
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json_res["is_active"], false);
+    let et_arr = json_res["event_types"].as_array().unwrap();
+    assert_eq!(et_arr.len(), 2);
+    assert_eq!(et_arr[0], "updated.event.1");
+
+    // 2. Reactivate
+    let reactivate_payload = json!({
+        "is_active": true
+    });
+
+    let req_react = Request::builder()
+        .uri(format!("/subscriptions/{}", sub.id))
+        .method("PATCH")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::from(reactivate_payload.to_string()))
+        .unwrap();
+
+    let res_react = app.oneshot(req_react).await.unwrap();
+    assert_eq!(res_react.status(), StatusCode::OK);
+    let body_bytes_react = axum::body::to_bytes(res_react.into_body(), usize::MAX).await.unwrap();
+    let json_react: Value = serde_json::from_slice(&body_bytes_react).unwrap();
+    assert_eq!(json_react["is_active"], true);
+}
+
+// 10. DELETE /subscriptions/{subscription_id} (Endpoint #38)
+#[tokio::test]
+async fn test_delete_subscription_preserves_historical_deliveries() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "del-sub").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Del Sub Source".to_string(),
+                slug: format!("dsub-src-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Del Sub Dest".to_string(),
+                url: "https://dsub.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["del.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = data::repositories::EventRepository::new(&pool)
+        .create(tenant_id, source.id, "del.event", None, json!({}), json!({}))
+        .await
+        .unwrap();
+
+    let delivery = data::repositories::DeliveryRepository::new(&pool)
+        .create(tenant_id, event.id, sub.id, dest.id, 5)
+        .await
+        .unwrap();
+
+    // Delete subscription
+    let req = Request::builder()
+        .uri(format!("/subscriptions/{}", sub.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    // Verify GET returns 404
+    let get_req = Request::builder()
+        .uri(format!("/subscriptions/{}", sub.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let get_res = app.oneshot(get_req).await.unwrap();
+    assert_eq!(get_res.status(), StatusCode::NOT_FOUND);
+
+    // Verify historical delivery remains intact
+    let deliv_repo = data::repositories::DeliveryRepository::new(&pool);
+    let historical_delivery = deliv_repo.find_by_tenant_and_id(tenant_id, delivery.id).await.unwrap();
+    assert!(historical_delivery.is_some());
+}
+

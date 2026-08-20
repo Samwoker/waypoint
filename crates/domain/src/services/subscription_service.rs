@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use data::repositories::{DestinationRepository, SourceRepository, SubscriptionRepository};
+use data::models::Subscription;
+use data::repositories::{AuditLogRepository, DestinationRepository, SourceRepository, SubscriptionRepository};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -21,7 +22,6 @@ impl SubscriptionService {
         tenant_id: Uuid,
         input: CreateSubscriptionInput,
     ) -> Result<SubscriptionView, CoreError> {
-        // Validate event types
         if input.event_types.is_empty() {
             return Err(CoreError::Validation("At least one event type must be specified".to_string()));
         }
@@ -44,11 +44,11 @@ impl SubscriptionService {
 
         // Validate source exists and belongs to the authenticated tenant
         let source_repo = SourceRepository::new(&self.pool);
-        match source_repo.find_by_tenant_and_id(tenant_id, input.source_id).await? {
+        let source = match source_repo.find_by_tenant_and_id(tenant_id, input.source_id).await? {
             Some(s) => s,
             None => {
                 if source_repo.find_by_id(input.source_id).await?.is_some() {
-                    return Err(CoreError::Forbidden("Source belongs to another tenant".to_string()));
+                    return Err(CoreError::NotFound(format!("Source '{}' not found", input.source_id)));
                 } else {
                     return Err(CoreError::NotFound(format!("Source '{}' not found", input.source_id)));
                 }
@@ -57,11 +57,11 @@ impl SubscriptionService {
 
         // Validate destination exists and belongs to the authenticated tenant
         let dest_repo = DestinationRepository::new(&self.pool);
-        match dest_repo.find_by_tenant_and_id(tenant_id, input.destination_id).await? {
+        let destination = match dest_repo.find_by_tenant_and_id(tenant_id, input.destination_id).await? {
             Some(d) => d,
             None => {
                 if dest_repo.find_by_id(input.destination_id).await?.is_some() {
-                    return Err(CoreError::Forbidden("Destination belongs to another tenant".to_string()));
+                    return Err(CoreError::NotFound(format!("Destination '{}' not found", input.destination_id)));
                 } else {
                     return Err(CoreError::NotFound(format!("Destination '{}' not found", input.destination_id)));
                 }
@@ -69,6 +69,15 @@ impl SubscriptionService {
         };
 
         let repo = SubscriptionRepository::new(&self.pool);
+
+        // Check for duplicate binding
+        if let Some(_existing) = repo.find_by_source_and_destination(tenant_id, input.source_id, input.destination_id).await? {
+            return Err(CoreError::Conflict(format!(
+                "Subscription binding for source '{}' and destination '{}' already exists",
+                input.source_id, input.destination_id
+            )));
+        }
+
         let sub = repo
             .create(
                 tenant_id,
@@ -77,39 +86,19 @@ impl SubscriptionService {
                 cleaned_event_types,
                 input.filter_rules,
                 input.transformation_template.as_deref(),
+                Some(source.name),
+                Some(destination.name),
             )
             .await?;
 
-        Ok(SubscriptionView {
-            id: sub.id,
-            tenant_id: sub.tenant_id,
-            source_id: sub.source_id,
-            destination_id: sub.destination_id,
-            event_types: sub.event_types,
-            filter_rules: sub.filter_rules,
-            transformation_template: sub.transformation_template,
-            is_active: sub.is_active,
-            created_at: sub.created_at,
-            updated_at: sub.updated_at,
-        })
+        Ok(to_subscription_view(sub))
     }
 
     pub async fn get_subscription(&self, tenant_id: Uuid, id: Uuid) -> Result<Option<SubscriptionView>, CoreError> {
         let repo = SubscriptionRepository::new(&self.pool);
         let sub = repo.find_by_tenant_and_id(tenant_id, id).await?;
 
-        Ok(sub.map(|s| SubscriptionView {
-            id: s.id,
-            tenant_id: s.tenant_id,
-            source_id: s.source_id,
-            destination_id: s.destination_id,
-            event_types: s.event_types,
-            filter_rules: s.filter_rules,
-            transformation_template: s.transformation_template,
-            is_active: s.is_active,
-            created_at: s.created_at,
-            updated_at: s.updated_at,
-        }))
+        Ok(sub.map(to_subscription_view))
     }
 
     pub async fn list_subscriptions(
@@ -124,21 +113,7 @@ impl SubscriptionService {
         let repo = SubscriptionRepository::new(&self.pool);
         let subs = repo.list_by_tenant(tenant_id, limit, offset).await?;
 
-        Ok(subs
-            .into_iter()
-            .map(|s| SubscriptionView {
-                id: s.id,
-                tenant_id: s.tenant_id,
-                source_id: s.source_id,
-                destination_id: s.destination_id,
-                event_types: s.event_types,
-                filter_rules: s.filter_rules,
-                transformation_template: s.transformation_template,
-                is_active: s.is_active,
-                created_at: s.created_at,
-                updated_at: s.updated_at,
-            })
-            .collect())
+        Ok(subs.into_iter().map(to_subscription_view).collect())
     }
 
     pub async fn update_subscription(
@@ -147,11 +122,12 @@ impl SubscriptionService {
         id: Uuid,
         input: UpdateSubscriptionInput,
     ) -> Result<SubscriptionView, CoreError> {
-        if let Some(ref event_types) = input.event_types {
-            if event_types.is_empty() {
+        let event_types = input.event_types;
+        if let Some(ref et_list) = event_types {
+            if et_list.is_empty() {
                 return Err(CoreError::Validation("At least one event type must be specified".to_string()));
             }
-            for et in event_types {
+            for et in et_list {
                 if et.trim().is_empty() {
                     return Err(CoreError::Validation("Event type cannot be empty".to_string()));
                 }
@@ -169,29 +145,58 @@ impl SubscriptionService {
             .update(
                 tenant_id,
                 id,
-                input.event_types,
+                event_types,
                 input.filter_rules,
                 input.transformation_template.as_deref(),
                 input.is_active,
             )
             .await?;
 
-        Ok(SubscriptionView {
-            id: sub.id,
-            tenant_id: sub.tenant_id,
-            source_id: sub.source_id,
-            destination_id: sub.destination_id,
-            event_types: sub.event_types,
-            filter_rules: sub.filter_rules,
-            transformation_template: sub.transformation_template,
-            is_active: sub.is_active,
-            created_at: sub.created_at,
-            updated_at: sub.updated_at,
-        })
+        Ok(to_subscription_view(sub))
     }
 
     pub async fn delete_subscription(&self, tenant_id: Uuid, id: Uuid) -> Result<(), CoreError> {
         let repo = SubscriptionRepository::new(&self.pool);
-        repo.delete(tenant_id, id).await
+        let existing = repo
+            .find_by_tenant_and_id(tenant_id, id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Subscription '{id}' not found")))?;
+
+        repo.delete(tenant_id, id).await?;
+
+        let audit_repo = AuditLogRepository::new(&self.pool);
+        let _ = audit_repo
+            .create(
+                tenant_id,
+                None,
+                "subscription.deleted",
+                Some("subscription"),
+                Some(id),
+                serde_json::json!({
+                    "subscription_id": id,
+                    "source_id": existing.source_id,
+                    "destination_id": existing.destination_id,
+                }),
+            )
+            .await;
+
+        Ok(())
+    }
+}
+
+fn to_subscription_view(s: Subscription) -> SubscriptionView {
+    SubscriptionView {
+        id: s.id,
+        tenant_id: s.tenant_id,
+        source_id: s.source_id,
+        destination_id: s.destination_id,
+        source_name: s.source_name,
+        destination_name: s.destination_name,
+        event_types: s.event_types,
+        filter_rules: s.filter_rules,
+        transformation_template: s.transformation_template,
+        is_active: s.is_active,
+        created_at: s.created_at,
+        updated_at: s.updated_at,
     }
 }
