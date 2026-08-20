@@ -274,6 +274,71 @@ pub struct EventView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventMetadataView {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub source_id: Uuid,
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    pub status: String,
+    pub received_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedEventsView {
+    pub events: Vec<EventMetadataView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliverySummary {
+    pub total: i64,
+    pub delivered: i64,
+    pub failed: i64,
+    pub pending: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventDetailView {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub source_id: Uuid,
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    pub status: String,
+    pub delivery_summary: DeliverySummary,
+    pub received_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawEventPayloadView {
+    pub event_id: Uuid,
+    pub headers: serde_json::Value,
+    pub payload: String,
+    pub is_binary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventDeliveryView {
+    pub id: Uuid,
+    pub destination_id: Uuid,
+    pub destination_name: String,
+    pub status: String,
+    pub attempt_count: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivered_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryView {
     pub id: Uuid,
     pub tenant_id: Uuid,

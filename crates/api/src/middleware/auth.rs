@@ -15,6 +15,7 @@ use crate::state::AppState;
 pub struct AuthenticatedTenant {
     pub tenant_id: Uuid,
     pub is_admin: bool,
+    pub scope: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,6 +24,7 @@ pub struct Claims {
     pub tenant_id: Uuid,
     pub role: Option<String>,
     pub is_admin: Option<bool>,
+    pub scope: Option<String>,
     pub exp: usize,
 }
 
@@ -65,16 +67,18 @@ impl FromRequestParts<AppState> for AuthenticatedTenant {
                 let is_admin = token_data.claims.is_admin.unwrap_or(false)
                     || token_data.claims.role.as_deref() == Some("admin")
                     || token_data.claims.role.as_deref() == Some("platform_admin");
+                let scope = token_data.claims.scope.unwrap_or_else(|| "full".to_string());
 
                 return Ok(AuthenticatedTenant {
                     tenant_id: token_data.claims.tenant_id,
                     is_admin,
+                    scope,
                 });
             }
 
             // Try API Key validation against database
-            match state.auth_service.validate_api_key(token).await {
-                Ok(tenant_id) => return Ok(AuthenticatedTenant { tenant_id, is_admin: false }),
+            match state.auth_service.validate_api_key_with_scope(token).await {
+                Ok((tenant_id, scope)) => return Ok(AuthenticatedTenant { tenant_id, is_admin: false, scope }),
                 Err(_) => return Err(ApiError(CoreError::Unauthorized("Invalid API key or token".to_string()))),
             }
         }
@@ -90,8 +94,8 @@ impl FromRequestParts<AppState> for AuthenticatedTenant {
                 return Err(ApiError(CoreError::Unauthorized("Empty x-api-key header".to_string())));
             }
 
-            match state.auth_service.validate_api_key(api_key).await {
-                Ok(tenant_id) => return Ok(AuthenticatedTenant { tenant_id, is_admin: false }),
+            match state.auth_service.validate_api_key_with_scope(api_key).await {
+                Ok((tenant_id, scope)) => return Ok(AuthenticatedTenant { tenant_id, is_admin: false, scope }),
                 Err(_) => return Err(ApiError(CoreError::Unauthorized("Invalid API key".to_string()))),
             }
         }

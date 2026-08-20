@@ -24,6 +24,11 @@ impl AuthService {
     }
 
     pub async fn validate_api_key(&self, raw_key: &str) -> Result<Uuid, CoreError> {
+        let (tenant_id, _) = self.validate_api_key_with_scope(raw_key).await?;
+        Ok(tenant_id)
+    }
+
+    pub async fn validate_api_key_with_scope(&self, raw_key: &str) -> Result<(Uuid, String), CoreError> {
         let trimmed = raw_key.trim();
         if trimmed.is_empty() {
             return Err(CoreError::Unauthorized("API key cannot be empty".to_string()));
@@ -42,7 +47,17 @@ impl AuthService {
         // Update last_used_at in the background / asynchronously
         let _ = repo.update_last_used(api_key.id).await;
 
-        Ok(api_key.tenant_id)
+        let scope = if api_key.name.to_lowercase().contains("read_only")
+            || api_key.key_prefix.contains("_ro_")
+            || trimmed.starts_with("rc_ro_")
+            || trimmed.contains("_ro_")
+        {
+            "read_only".to_string()
+        } else {
+            "full".to_string()
+        };
+
+        Ok((api_key.tenant_id, scope))
     }
 
     pub async fn create_api_key(

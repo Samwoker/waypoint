@@ -4,6 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 use domain::dto::CreateEventInput;
@@ -13,26 +14,37 @@ use crate::middleware::auth::AuthenticatedTenant;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
-pub struct ListPagination {
+pub struct ListEventsQuery {
+    pub source_id: Option<Uuid>,
+    pub status: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    pub cursor: Option<String>,
 }
 
 pub async fn list_events(
     tenant: AuthenticatedTenant,
     State(state): State<AppState>,
-    Query(pagination): Query<ListPagination>,
+    Query(params): Query<ListEventsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let limit = pagination.limit.unwrap_or(20);
-    let offset = pagination.offset.unwrap_or(0);
+    let limit = params.limit.unwrap_or(20);
 
-    let events = state
+    let paginated = state
         .ingestion_service
-        .list_events(tenant.tenant_id, limit, offset)
+        .list_events_paginated(
+            tenant.tenant_id,
+            params.source_id,
+            params.status.as_deref(),
+            params.from,
+            params.to,
+            limit,
+            params.cursor.as_deref(),
+        )
         .await
         .map_err(ApiError)?;
 
-    Ok((StatusCode::OK, Json(events)))
+    Ok((StatusCode::OK, Json(paginated)))
 }
 
 pub async fn get_event(
@@ -42,12 +54,25 @@ pub async fn get_event(
 ) -> Result<impl IntoResponse, ApiError> {
     let event = state
         .ingestion_service
-        .get_event(tenant.tenant_id, id)
+        .get_event_detail(tenant.tenant_id, id)
         .await
-        .map_err(ApiError)?
-        .ok_or_else(|| ApiError(relay_core::error::CoreError::NotFound(format!("Event '{id}' not found"))))?;
+        .map_err(ApiError)?;
 
     Ok((StatusCode::OK, Json(event)))
+}
+
+pub async fn get_event_raw(
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let raw_payload = state
+        .ingestion_service
+        .get_event_raw(tenant.tenant_id, id, &tenant.scope)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(raw_payload)))
 }
 
 pub async fn create_event(
@@ -70,12 +95,32 @@ pub async fn create_event(
     Ok((StatusCode::ACCEPTED, Json(event)))
 }
 
-pub async fn get_event_deliveries(
-    _tenant: AuthenticatedTenant,
-    State(_state): State<AppState>,
-    Path(_id): Path<Uuid>,
+pub async fn delete_event(
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(StatusCode::NOT_IMPLEMENTED)
+    state
+        .ingestion_service
+        .delete_event_compliance(tenant.tenant_id, id)
+        .await
+        .map_err(ApiError)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_event_deliveries(
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let deliveries = state
+        .ingestion_service
+        .get_event_deliveries(tenant.tenant_id, id)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(deliveries)))
 }
 
 pub async fn retry_event(

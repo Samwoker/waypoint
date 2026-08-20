@@ -536,8 +536,9 @@ async fn test_get_event_existing() {
     assert_eq!(json_res["tenant_id"], tenant_id.to_string());
     assert_eq!(json_res["source_id"], source.id.to_string());
     assert_eq!(json_res["event_type"], "customer.created");
-    assert_eq!(json_res["status"], "received");
-    assert_eq!(json_res["payload"]["customer_id"], "cus_123");
+    assert_eq!(json_res["status"], "no_subscriptions");
+    assert!(json_res.get("payload").is_none());
+    assert_eq!(json_res["delivery_summary"]["total"], 0);
     assert!(json_res["created_at"].is_string());
 
     // Also verify /api/v1/events/{id} alias
@@ -660,3 +661,488 @@ async fn test_get_event_unauthenticated() {
     let res_invalid = app.oneshot(req_invalid).await.unwrap();
     assert_eq!(res_invalid.status(), StatusCode::UNAUTHORIZED);
 }
+
+// 6. GET /events with Keyset Pagination and Filters (Endpoint #39)
+#[tokio::test]
+async fn test_list_events_pagination_and_filters() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "list-ev-pg").await;
+
+    let source1 = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Source 1".to_string(),
+                slug: format!("s1-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let source2 = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Source 2".to_string(),
+                slug: format!("s2-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Dest 1".to_string(),
+                url: "https://example.com/dest".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            domain::dto::CreateSubscriptionInput {
+                source_id: source1.id,
+                destination_id: dest.id,
+                event_types: vec!["test.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Create 5 events
+    let mut event_ids = Vec::new();
+    for i in 1..=5 {
+        let src_id = if i <= 3 { source1.id } else { source2.id };
+        let ev = state
+            .ingestion_service
+            .create_event(
+                tenant_id,
+                CreateEventInput {
+                    source_id: Some(src_id),
+                    event_type: "test.event".to_string(),
+                    payload: json!({ "index": i }),
+                    idempotency_key: None,
+                    headers: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        if i <= 3 {
+            // Create delivery for source1 events
+            let delivery = data::repositories::DeliveryRepository::new(&pool)
+                .create(tenant_id, ev.id, sub.id, dest.id, 5)
+                .await
+                .unwrap();
+
+            if i == 1 {
+                // Mark delivery as delivered
+                data::repositories::DeliveryRepository::new(&pool)
+                    .update_status(delivery.id, "delivered", 1, None)
+                    .await
+                    .unwrap();
+            }
+        }
+        event_ids.push(ev.id);
+    }
+
+    // 1. First page: limit = 2
+    let req1 = Request::builder()
+        .uri("/events?limit=2")
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res1 = app.clone().oneshot(req1).await.unwrap();
+    assert_eq!(res1.status(), StatusCode::OK);
+    let page1: Value = serde_json::from_slice(&axum::body::to_bytes(res1.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(page1["events"].as_array().unwrap().len(), 2);
+    assert_eq!(page1["has_more"], true);
+    let cursor1 = page1["next_cursor"].as_str().unwrap();
+
+    // 2. Second page using cursor
+    let req2 = Request::builder()
+        .uri(format!("/events?limit=2&cursor={cursor1}"))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res2 = app.clone().oneshot(req2).await.unwrap();
+    assert_eq!(res2.status(), StatusCode::OK);
+    let page2: Value = serde_json::from_slice(&axum::body::to_bytes(res2.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(page2["events"].as_array().unwrap().len(), 2);
+    assert_eq!(page2["has_more"], true);
+
+    // 3. Filter by source_id = source2.id (should return 2 events)
+    let req_src = Request::builder()
+        .uri(format!("/events?source_id={}", source2.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_src = app.clone().oneshot(req_src).await.unwrap();
+    assert_eq!(res_src.status(), StatusCode::OK);
+    let page_src: Value = serde_json::from_slice(&axum::body::to_bytes(res_src.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(page_src["events"].as_array().unwrap().len(), 2);
+
+    // 4. Filter by status = delivered (should return 1 event)
+    let req_st = Request::builder()
+        .uri("/events?status=delivered")
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_st = app.clone().oneshot(req_st).await.unwrap();
+    assert_eq!(res_st.status(), StatusCode::OK);
+    let page_st: Value = serde_json::from_slice(&axum::body::to_bytes(res_st.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(page_st["events"].as_array().unwrap().len(), 1);
+
+    // 5. Malformed cursor -> 400 Bad Request
+    let req_bad_cursor = Request::builder()
+        .uri("/events?cursor=invalid_base64_not_good")
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_bad = app.oneshot(req_bad_cursor).await.unwrap();
+    assert!(res_bad.status() == StatusCode::BAD_REQUEST || res_bad.status() == StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+// 7. GET /events/{event_id}/raw (Endpoint #41)
+#[tokio::test]
+async fn test_get_event_raw_payload_and_audit() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, full_key) = create_test_tenant_and_key(&state, "raw-ev").await;
+
+    // Create a read_only key
+    let ro_api_key = state
+        .auth_service
+        .create_api_key(
+            tenant_id,
+            CreateApiKeyInput {
+                name: "read_only_key".to_string(),
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Raw Source".to_string(),
+                slug: format!("raw-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = state
+        .ingestion_service
+        .create_event(
+            tenant_id,
+            CreateEventInput {
+                source_id: Some(source.id),
+                event_type: "order.processed".to_string(),
+                payload: json!({ "order_id": "ord_999", "amount": 250 }),
+                idempotency_key: None,
+                headers: Some(json!({ "X-Signature": "sig123" })),
+            },
+        )
+        .await
+        .unwrap();
+
+    // 1. Full scope succeeds
+    let req_full = Request::builder()
+        .uri(format!("/events/{}/raw", event.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {full_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_full = app.clone().oneshot(req_full).await.unwrap();
+    assert_eq!(res_full.status(), StatusCode::OK);
+    let json_full: Value = serde_json::from_slice(&axum::body::to_bytes(res_full.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(json_full["event_id"], event.id.to_string());
+    assert!(json_full["payload"].as_str().unwrap().contains("ord_999"));
+
+    // 2. Read-only key rejected with 403 Forbidden
+    let req_ro = Request::builder()
+        .uri(format!("/events/{}/raw", event.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {}", ro_api_key.raw_key))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_ro = app.clone().oneshot(req_ro).await.unwrap();
+    assert_eq!(res_ro.status(), StatusCode::FORBIDDEN);
+
+    // 3. Cross-tenant request rejected with 404
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "raw-ev-b").await;
+    let req_cross = Request::builder()
+        .uri(format!("/events/{}/raw", event.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_cross = app.oneshot(req_cross).await.unwrap();
+    assert_eq!(res_cross.status(), StatusCode::NOT_FOUND);
+}
+
+// 8. DELETE /events/{event_id} Compliance Deletion (Endpoint #42)
+#[tokio::test]
+async fn test_delete_event_compliance_and_cascades() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "del-ev-comp").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Compliance Source".to_string(),
+                slug: format!("comp-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Compliance Dest".to_string(),
+                url: "https://example.com/dest".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            domain::dto::CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["comp.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = state
+        .ingestion_service
+        .create_event(
+            tenant_id,
+            CreateEventInput {
+                source_id: Some(source.id),
+                event_type: "comp.event".to_string(),
+                payload: json!({ "gdpr_data": "must_be_deleted" }),
+                idempotency_key: None,
+                headers: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let deliv_repo = data::repositories::DeliveryRepository::new(&pool);
+    let delivery = deliv_repo.create(tenant_id, event.id, sub.id, dest.id, 5).await.unwrap();
+    deliv_repo.record_attempt(delivery.id, 1, Some(200), None, None, None, None, None, Some(30)).await.unwrap();
+
+    // Delete event
+    let req = Request::builder()
+        .uri(format!("/events/{}", event.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    // Verify GET /events/{id} returns 404
+    let get_req = Request::builder()
+        .uri(format!("/events/{}", event.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let get_res = app.oneshot(get_req).await.unwrap();
+    assert_eq!(get_res.status(), StatusCode::NOT_FOUND);
+
+    // Verify deliveries were cascade deleted
+    let deliv = deliv_repo.find_by_tenant_and_id(tenant_id, delivery.id).await.unwrap();
+    assert!(deliv.is_none());
+
+    // Verify audit log exists
+    let audit_logs = data::repositories::AuditLogRepository::new(&pool)
+        .list_by_tenant(tenant_id, None, None, None, None, 10, 0)
+        .await
+        .unwrap();
+    let comp_audit = audit_logs.iter().find(|a| a.action == "event.compliance_deleted");
+    assert!(comp_audit.is_some());
+    // Verify payload is NOT copied into audit log
+    assert!(comp_audit.unwrap().metadata.to_string().contains("gdpr_data") == false);
+}
+
+// 9. GET /events/{event_id}/deliveries (Endpoint #43)
+#[tokio::test]
+async fn test_get_event_deliveries_and_destination_names() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "ev-delivs").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Deliv Event Source".to_string(),
+                slug: format!("ev-del-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Customer Webhook Target".to_string(),
+                url: "https://customer.example.com/target".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            domain::dto::CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["target.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = state
+        .ingestion_service
+        .create_event(
+            tenant_id,
+            CreateEventInput {
+                source_id: Some(source.id),
+                event_type: "target.event".to_string(),
+                payload: json!({ "order": "123" }),
+                idempotency_key: None,
+                headers: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let delivery = data::repositories::DeliveryRepository::new(&pool)
+        .create(tenant_id, event.id, sub.id, dest.id, 5)
+        .await
+        .unwrap();
+
+    // Query deliveries for event
+    let req = Request::builder()
+        .uri(format!("/events/{}/deliveries", event.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let arr = json_res.as_array().unwrap();
+
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["id"], delivery.id.to_string());
+    assert_eq!(arr[0]["destination_id"], dest.id.to_string());
+    assert_eq!(arr[0]["destination_name"], "Customer Webhook Target");
+    assert_eq!(arr[0]["status"], "pending");
+    assert_eq!(arr[0]["attempt_count"], 0);
+
+    // Cross tenant request returns 404
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "ev-delivs-b").await;
+    let req_cross = Request::builder()
+        .uri(format!("/events/{}/deliveries", event.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_cross = app.oneshot(req_cross).await.unwrap();
+    assert_eq!(res_cross.status(), StatusCode::NOT_FOUND);
+}
+
