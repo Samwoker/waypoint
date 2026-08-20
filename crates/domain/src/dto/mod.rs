@@ -60,6 +60,14 @@ pub struct RotateSecretResponse {
     pub warning: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct SourceVerificationLogEntry {
+    pub received_at: DateTime<Utc>,
+    pub signature_valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_event_id: Option<String>,
+}
+
 // --- Destination DTOs ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

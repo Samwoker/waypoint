@@ -120,3 +120,23 @@ pub async fn rotate_source_secret(
 
     Ok((StatusCode::OK, Json(result)))
 }
+
+#[derive(Debug, Deserialize, Default)]
+pub struct VerificationLogQuery {
+    pub limit: Option<i64>,
+}
+
+pub async fn get_source_verification_log(
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<VerificationLogQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let logs = state
+        .source_service
+        .get_verification_log(tenant.tenant_id, id, query.limit)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(logs)))
+}

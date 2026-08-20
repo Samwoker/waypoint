@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use data::repositories::{AuditLogRepository, SourceRepository, SubscriptionRepository};
+use data::repositories::{AuditLogRepository, EventRepository, SourceRepository, SubscriptionRepository};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use relay_core::crypto::{encrypt_secret, generate_secret_base64};
 use relay_core::error::CoreError;
-use crate::dto::{CreateSourceInput, RotateSecretResponse, SourceView, UpdateSourceInput};
+use crate::dto::{CreateSourceInput, RotateSecretResponse, SourceVerificationLogEntry, SourceView, UpdateSourceInput};
 
 #[derive(Clone)]
 pub struct SourceService {
@@ -275,6 +275,36 @@ impl SourceService {
             secret: new_plaintext_secret,
             warning: "Secret rotated successfully. Webhook provider must immediately be updated with this new secret to prevent webhook delivery failures.".to_string(),
         })
+    }
+
+    pub async fn get_verification_log(
+        &self,
+        tenant_id: Uuid,
+        source_id: Uuid,
+        limit: Option<i64>,
+    ) -> Result<Vec<SourceVerificationLogEntry>, CoreError> {
+        let source_repo = SourceRepository::new(&self.pool);
+        let _source = source_repo
+            .find_by_tenant_and_id(tenant_id, source_id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Source '{source_id}' not found")))?;
+
+        let limit = match limit {
+            Some(l) if l > 0 => l.min(100),
+            _ => 50,
+        };
+
+        let event_repo = EventRepository::new(&self.pool);
+        let records = event_repo.get_verification_log(tenant_id, source_id, limit).await?;
+
+        Ok(records
+            .into_iter()
+            .map(|r| SourceVerificationLogEntry {
+                received_at: r.received_at,
+                signature_valid: r.signature_valid,
+                external_event_id: r.external_event_id,
+            })
+            .collect())
     }
 }
 

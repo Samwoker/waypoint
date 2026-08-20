@@ -15,3 +15,10 @@ pub struct Event {
     pub status: String,
     pub created_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
+pub struct VerificationLogRecord {
+    pub received_at: DateTime<Utc>,
+    pub signature_valid: bool,
+    pub external_event_id: Option<String>,
+}

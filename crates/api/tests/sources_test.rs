@@ -1576,3 +1576,259 @@ async fn test_rotate_source_secret_database_failure() {
         err => panic!("Expected CoreError::Internal, got {:?}", err),
     }
 }
+
+// 10. GET /sources/{source_id}/verification-log tests
+#[tokio::test]
+async fn test_verification_log_valid_source_and_no_payload_exposed() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "vlog-valid").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "VLog Source".to_string(),
+                slug: format!("vlog-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "stripe".to_string(),
+                verification_type: "hmac_sha256".to_string(),
+                secret: Some("whsec_test".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+    // Ingest 2 events directly via repo
+    let event_repo = data::repositories::EventRepository::new(&pool);
+    for i in 1..=2 {
+        event_repo
+            .create(
+                tenant_id,
+                source.id,
+                "charge.captured",
+                Some(&format!("vlog-idem-{i}-{}", Uuid::new_v4())),
+                json!({"stripe-signature": "sig_valid_123", "signature_valid": true}),
+                json!({"sensitive_card": "4111222233334444", "amount": 1000 * i}),
+            )
+            .await
+            .unwrap();
+    }
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/verification-log?limit=50", source.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let arr = json_res.as_array().unwrap();
+
+    assert_eq!(arr.len(), 2);
+    for item in arr {
+        assert!(item["received_at"].is_string());
+        assert_eq!(item["signature_valid"], true);
+        // Security check: raw payload and headers must NOT be returned
+        assert!(item.get("payload").is_none());
+        assert!(item.get("headers").is_none());
+        assert!(item.get("sensitive_card").is_none());
+    }
+
+    // Also verify /v1/sources/{id}/verification-log
+    let req_v1 = Request::builder()
+        .uri(format!("/v1/sources/{}/verification-log", source.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_v1 = app.oneshot(req_v1).await.unwrap();
+    assert_eq!(res_v1.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_verification_log_empty_log() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "vlog-empty").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Empty VLog Source".to_string(),
+                slug: format!("vlog-empty-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/verification-log", source.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json_res.as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_verification_log_limit_handling() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "vlog-lim").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Limit Source".to_string(),
+                slug: format!("vlog-lim-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event_repo = data::repositories::EventRepository::new(&pool);
+    for i in 1..=5 {
+        event_repo
+            .create(
+                tenant_id,
+                source.id,
+                "test.event",
+                Some(&format!("vlog-lim-idem-{i}-{}", Uuid::new_v4())),
+                json!({}),
+                json!({"count": i}),
+            )
+            .await
+            .unwrap();
+    }
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/verification-log?limit=3", source.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json_res.as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn test_verification_log_maximum_limit_clamping() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "vlog-max-lim").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Max Limit Source".to_string(),
+                slug: format!("vlog-max-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Querying with limit=500 -> should not error and should clamp gracefully
+    let req = Request::builder()
+        .uri(format!("/sources/{}/verification-log?limit=500", source.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_verification_log_cross_tenant() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_a, _key_a) = create_test_tenant_and_key(&state, "vlog-iso-a").await;
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "vlog-iso-b").await;
+
+    let source_a = state
+        .source_service
+        .create_source(
+            tenant_a,
+            CreateSourceInput {
+                name: "Tenant A Source".to_string(),
+                slug: format!("ta-vlog-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/verification-log", source_a.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_verification_log_nonexistent_source() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (_tenant_id, raw_key) = create_test_tenant_and_key(&state, "vlog-none").await;
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/verification-log", Uuid::new_v4()))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_verification_log_unauthenticated() {
+    let (app, _state, _pool) = setup_test_app().await;
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/verification-log", Uuid::new_v4()))
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}

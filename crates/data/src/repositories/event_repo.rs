@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use relay_core::error::CoreError;
-use crate::models::Event;
+use crate::models::{Event, VerificationLogRecord};
 
 #[derive(Clone, Debug)]
 pub struct EventRepository<'a> {
@@ -198,5 +198,33 @@ impl<'a> EventRepository<'a> {
         .map_err(|e| CoreError::Internal(format!("Database error updating event status: {e}")))?;
 
         Ok(())
+    }
+
+    pub async fn get_verification_log(
+        &self,
+        tenant_id: Uuid,
+        source_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<VerificationLogRecord>, CoreError> {
+        let rows = sqlx::query_as::<_, VerificationLogRecord>(
+            r#"
+            SELECT
+                received_at,
+                COALESCE((headers->>'signature_valid')::boolean, (status != 'failed')) AS signature_valid,
+                external_id AS external_event_id
+            FROM events
+            WHERE tenant_id = $1 AND source_id = $2
+            ORDER BY received_at DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(source_id)
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error querying verification log: {e}")))?;
+
+        Ok(rows)
     }
 }

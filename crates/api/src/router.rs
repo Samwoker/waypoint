@@ -59,6 +59,7 @@ pub fn create_router(state: AppState) -> Router {
                 .delete(sources::delete_source),
         )
         .route("/sources/:id/rotate-secret", post(sources::rotate_source_secret))
+        .route("/sources/:id/verification-log", get(sources::get_source_verification_log))
         .route("/v1/sources", get(sources::list_sources).post(sources::create_source))
         .route(
             "/v1/sources/:id",
@@ -68,6 +69,7 @@ pub fn create_router(state: AppState) -> Router {
                 .delete(sources::delete_source),
         )
         .route("/v1/sources/:id/rotate-secret", post(sources::rotate_source_secret))
+        .route("/v1/sources/:id/verification-log", get(sources::get_source_verification_log))
         .route("/api/v1/sources", get(sources::list_sources).post(sources::create_source))
         .route(
             "/api/v1/sources/:id",
@@ -77,6 +79,7 @@ pub fn create_router(state: AppState) -> Router {
                 .delete(sources::delete_source),
         )
         .route("/api/v1/sources/:id/rotate-secret", post(sources::rotate_source_secret))
+        .route("/api/v1/sources/:id/verification-log", get(sources::get_source_verification_log))
         // Destinations API
         .route(
             "/v1/destinations",
