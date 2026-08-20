@@ -208,9 +208,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/audit-logs", get(audit_logs::list_audit_logs))
         .route("/api/v1/audit-logs", get(audit_logs::list_audit_logs))
         // DLQ API
+        .route("/dlq", get(dlq::list_dlq))
+        .route("/dlq/:id/requeue", post(dlq::requeue_dlq_item))
+        .route("/dlq/:id", get(dlq::get_dlq_item).delete(dlq::discard_dlq_item))
+        .route("/v1/dlq", get(dlq::list_dlq))
+        .route("/v1/dlq/:id/requeue", post(dlq::requeue_dlq_item))
+        .route("/v1/dlq/:id", get(dlq::get_dlq_item).delete(dlq::discard_dlq_item))
         .route("/api/v1/dlq", get(dlq::list_dlq))
         .route("/api/v1/dlq/retry-all", post(dlq::retry_all_dlq))
-        .route("/api/v1/dlq/:id", get(dlq::get_dlq_item).delete(dlq::purge_dlq_item))
+        .route("/api/v1/dlq/:id/requeue", post(dlq::requeue_dlq_item))
+        .route("/api/v1/dlq/:id", get(dlq::get_dlq_item).delete(dlq::discard_dlq_item))
         .route("/api/v1/dlq/:id/retry", post(dlq::retry_dlq_item))
         // Transformations API
         .route("/api/v1/transformations/test", post(transformations::test_transformation))

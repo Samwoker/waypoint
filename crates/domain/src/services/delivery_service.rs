@@ -324,6 +324,142 @@ impl DeliveryService {
             .collect())
     }
 
+    pub async fn list_dlq_paginated(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<crate::dto::PaginatedDlqView, CoreError> {
+        let limit = if limit <= 0 || limit > 100 { 20 } else { limit };
+
+        let (cursor_created_at, cursor_id) = if let Some(c) = cursor {
+            let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(c.trim())
+                .or_else(|_| base64::engine::general_purpose::STANDARD.decode(c.trim()))
+                .map_err(|_| CoreError::Validation("Invalid cursor encoding".to_string()))?;
+
+            let decoded_str = String::from_utf8(decoded)
+                .map_err(|_| CoreError::Validation("Invalid cursor text".to_string()))?;
+
+            let parts: Vec<&str> = decoded_str.split('_').collect();
+            if parts.len() < 2 {
+                return Err(CoreError::Validation("Invalid cursor structure".to_string()));
+            }
+
+            let ts_str = parts[..parts.len() - 1].join("_");
+            let id_str = parts[parts.len() - 1];
+
+            let ts = DateTime::parse_from_rfc3339(&ts_str)
+                .map_err(|_| CoreError::Validation("Invalid cursor timestamp".to_string()))?
+                .with_timezone(&Utc);
+
+            let id = Uuid::parse_str(id_str)
+                .map_err(|_| CoreError::Validation("Invalid cursor UUID".to_string()))?;
+
+            (Some(ts), Some(id))
+        } else {
+            (None, None)
+        };
+
+        let repo = DeliveryRepository::new(&self.pool);
+        let mut items = repo
+            .list_dlq_paginated(tenant_id, cursor_created_at, cursor_id, limit + 1)
+            .await?;
+
+        let has_more = items.len() > limit as usize;
+        if has_more {
+            items.truncate(limit as usize);
+        }
+
+        let next_cursor = if has_more {
+            items.last().map(|last| {
+                let payload = format!("{}_{}", last.created_at.to_rfc3339(), last.delivery_id);
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload)
+            })
+        } else {
+            None
+        };
+
+        let item_views = items
+            .into_iter()
+            .map(|d| crate::dto::DlqItemView {
+                delivery_id: d.delivery_id,
+                tenant_id: d.tenant_id,
+                event_id: d.event_id,
+                event_type: d.event_type,
+                destination_id: d.destination_id,
+                destination_name: d.destination_name,
+                destination_url: d.destination_url,
+                status: d.status,
+                attempt_count: d.attempt_count,
+                max_attempts: d.max_attempts,
+                last_error: d.last_error,
+                created_at: d.created_at,
+                updated_at: d.updated_at,
+            })
+            .collect();
+
+        Ok(crate::dto::PaginatedDlqView {
+            items: item_views,
+            next_cursor,
+            has_more,
+        })
+    }
+
+    pub async fn requeue_dlq_item(
+        &self,
+        tenant_id: Uuid,
+        event_id: Uuid,
+        destination_id: Uuid,
+    ) -> Result<DeliveryView, CoreError> {
+        let event_repo = data::repositories::EventRepository::new(&self.pool);
+        if event_repo.find_by_tenant_and_id(tenant_id, event_id).await?.is_none() {
+            return Err(CoreError::NotFound(format!("Event '{event_id}' not found")));
+        }
+
+        let dest_repo = data::repositories::DestinationRepository::new(&self.pool);
+        if dest_repo.find_by_tenant_and_id(tenant_id, destination_id).await?.is_none() {
+            return Err(CoreError::NotFound(format!("Destination '{destination_id}' not found")));
+        }
+
+        let repo = DeliveryRepository::new(&self.pool);
+        let delivery = repo.requeue_dlq(tenant_id, event_id, destination_id).await?;
+
+        Ok(DeliveryView {
+            id: delivery.id,
+            tenant_id: delivery.tenant_id,
+            event_id: delivery.event_id,
+            subscription_id: delivery.subscription_id,
+            destination_id: delivery.destination_id,
+            status: delivery.status,
+            attempt_count: delivery.attempt_count,
+            max_attempts: delivery.max_attempts,
+            next_retry_at: delivery.next_retry_at,
+            created_at: delivery.created_at,
+            updated_at: delivery.updated_at,
+        })
+    }
+
+    pub async fn discard_dlq_item(
+        &self,
+        tenant_id: Uuid,
+        event_id: Uuid,
+        destination_id: Uuid,
+    ) -> Result<(), CoreError> {
+        let event_repo = data::repositories::EventRepository::new(&self.pool);
+        if event_repo.find_by_tenant_and_id(tenant_id, event_id).await?.is_none() {
+            return Err(CoreError::NotFound(format!("Event '{event_id}' not found")));
+        }
+
+        let dest_repo = data::repositories::DestinationRepository::new(&self.pool);
+        if dest_repo.find_by_tenant_and_id(tenant_id, destination_id).await?.is_none() {
+            return Err(CoreError::NotFound(format!("Destination '{destination_id}' not found")));
+        }
+
+        let repo = DeliveryRepository::new(&self.pool);
+        repo.discard_dlq(tenant_id, event_id, destination_id).await
+    }
+
     pub async fn replay_dlq(&self, tenant_id: Uuid, delivery_id: Uuid) -> Result<(), CoreError> {
         self.retry_delivery(tenant_id, delivery_id).await?;
         Ok(())

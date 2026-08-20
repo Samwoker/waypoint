@@ -424,6 +424,32 @@ pub struct ReplayBatchResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DlqItemView {
+    pub delivery_id: Uuid,
+    pub tenant_id: Uuid,
+    pub event_id: Uuid,
+    pub event_type: String,
+    pub destination_id: Uuid,
+    pub destination_name: String,
+    pub destination_url: String,
+    pub status: String,
+    pub attempt_count: i32,
+    pub max_attempts: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedDlqView {
+    pub items: Vec<DlqItemView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryAttemptView {
     pub id: Uuid,
     pub delivery_id: Uuid,

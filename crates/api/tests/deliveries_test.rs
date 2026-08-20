@@ -965,3 +965,401 @@ async fn test_replay_events_batch() {
     let json_b: Value = serde_json::from_slice(&axum::body::to_bytes(res_b.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(json_b["replayed_count"], 0);
 }
+
+// 9. GET /dlq with Keyset Pagination and Context (Endpoint #49)
+#[tokio::test]
+async fn test_list_dlq_records_and_pagination() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "dlq-list").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "DLQ Test Source".to_string(),
+                slug: format!("dlq-src-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "DLQ Destination".to_string(),
+                url: "https://dlq.example.com/target".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["dlq.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let deliv_repo = DeliveryRepository::new(&pool);
+
+    // Create 3 events and deliveries, 2 marked as dead_lettered, 1 as delivered
+    let mut dlq_delivery_ids = Vec::new();
+    for i in 1..=3 {
+        let ev = state
+            .ingestion_service
+            .create_event(
+                tenant_id,
+                CreateEventInput {
+                    source_id: Some(source.id),
+                    event_type: "dlq.event".to_string(),
+                    payload: json!({"num": i}),
+                    idempotency_key: None,
+                    headers: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let d = deliv_repo.create(tenant_id, ev.id, sub.id, dest.id, 5).await.unwrap();
+        if i <= 2 {
+            deliv_repo.update_status(d.id, "dead_lettered", 5, None).await.unwrap();
+            dlq_delivery_ids.push(d.id);
+        } else {
+            deliv_repo.update_status(d.id, "delivered", 1, None).await.unwrap();
+        }
+    }
+
+    // 1. Query GET /dlq
+    let req = Request::builder()
+        .uri("/dlq")
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let items = json_res["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["event_type"], "dlq.event");
+    assert_eq!(items[0]["destination_name"], "DLQ Destination");
+    assert_eq!(items[0]["destination_url"], "https://dlq.example.com/target");
+    assert_eq!(items[0]["status"], "dead_lettered");
+
+    // 2. Pagination test: limit = 1
+    let req_pg = Request::builder()
+        .uri("/dlq?limit=1")
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_pg = app.clone().oneshot(req_pg).await.unwrap();
+    assert_eq!(res_pg.status(), StatusCode::OK);
+    let page1: Value = serde_json::from_slice(&axum::body::to_bytes(res_pg.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(page1["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page1["has_more"], true);
+    let cursor = page1["next_cursor"].as_str().unwrap();
+
+    let req_pg2 = Request::builder()
+        .uri(format!("/dlq?limit=1&cursor={cursor}"))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_pg2 = app.clone().oneshot(req_pg2).await.unwrap();
+    assert_eq!(res_pg2.status(), StatusCode::OK);
+    let page2: Value = serde_json::from_slice(&axum::body::to_bytes(res_pg2.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(page2["items"].as_array().unwrap().len(), 1);
+
+    // 3. Cross-tenant isolation returns empty list
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "dlq-list-b").await;
+    let req_b = Request::builder()
+        .uri("/dlq")
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_b = app.oneshot(req_b).await.unwrap();
+    assert_eq!(res_b.status(), StatusCode::OK);
+    let json_b: Value = serde_json::from_slice(&axum::body::to_bytes(res_b.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(json_b["items"].as_array().unwrap().len(), 0);
+}
+
+// 10. POST /dlq/{event_id}/requeue (Endpoint #50)
+#[tokio::test]
+async fn test_requeue_dlq_delivery() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "dlq-req").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Requeue Source".to_string(),
+                slug: format!("rq-src-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Requeue Dest".to_string(),
+                url: "https://example.com/requeue".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["requeue.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = state
+        .ingestion_service
+        .create_event(
+            tenant_id,
+            CreateEventInput {
+                source_id: Some(source.id),
+                event_type: "requeue.event".to_string(),
+                payload: json!({"item": "test"}),
+                idempotency_key: None,
+                headers: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let deliv_repo = DeliveryRepository::new(&pool);
+    let delivery = deliv_repo.create(tenant_id, event.id, sub.id, dest.id, 5).await.unwrap();
+    deliv_repo.update_status(delivery.id, "dead_lettered", 5, None).await.unwrap();
+
+    // 1. Requeue without destination_id query parameter -> 400 Bad Request / 422
+    let req_no_dest = Request::builder()
+        .uri(format!("/dlq/{}/requeue", event.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_no_dest = app.clone().oneshot(req_no_dest).await.unwrap();
+    assert!(res_no_dest.status().is_client_error());
+
+    // 2. Valid DLQ requeue
+    let req_ok = Request::builder()
+        .uri(format!("/dlq/{}/requeue?destination_id={}", event.id, dest.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_ok = app.clone().oneshot(req_ok).await.unwrap();
+    assert_eq!(res_ok.status(), StatusCode::OK);
+    let json_ok: Value = serde_json::from_slice(&axum::body::to_bytes(res_ok.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(json_ok["status"], "pending");
+    assert_eq!(json_ok["attempt_count"], 0);
+
+    // 3. Requeue when already pending -> Validation error
+    let req_pending = Request::builder()
+        .uri(format!("/dlq/{}/requeue?destination_id={}", event.id, dest.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_pending = app.clone().oneshot(req_pending).await.unwrap();
+    assert!(res_pending.status().is_client_error());
+
+    // 4. Cross-tenant requeue -> 404 Not Found
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "dlq-req-b").await;
+    let req_b = Request::builder()
+        .uri(format!("/dlq/{}/requeue?destination_id={}", event.id, dest.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_b = app.oneshot(req_b).await.unwrap();
+    assert_eq!(res_b.status(), StatusCode::NOT_FOUND);
+}
+
+// 11. DELETE /dlq/{event_id}?destination_id= (Endpoint #51)
+#[tokio::test]
+async fn test_discard_dlq_delivery() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "dlq-disc").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Discard Source".to_string(),
+                slug: format!("disc-src-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Discard Dest".to_string(),
+                url: "https://example.com/discard".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["discard.event".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = state
+        .ingestion_service
+        .create_event(
+            tenant_id,
+            CreateEventInput {
+                source_id: Some(source.id),
+                event_type: "discard.event".to_string(),
+                payload: json!({"val": 99}),
+                idempotency_key: None,
+                headers: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let deliv_repo = DeliveryRepository::new(&pool);
+    let delivery = deliv_repo.create(tenant_id, event.id, sub.id, dest.id, 5).await.unwrap();
+    deliv_repo.update_status(delivery.id, "dead_lettered", 5, None).await.unwrap();
+
+    // 1. Missing destination_id query param -> 400 Bad Request
+    let req_no_dest = Request::builder()
+        .uri(format!("/dlq/{}", event.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_no_dest = app.clone().oneshot(req_no_dest).await.unwrap();
+    assert!(res_no_dest.status().is_client_error());
+
+    // 2. Successful discard -> 204 No Content
+    let req_ok = Request::builder()
+        .uri(format!("/dlq/{}?destination_id={}", event.id, dest.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_ok = app.clone().oneshot(req_ok).await.unwrap();
+    assert_eq!(res_ok.status(), StatusCode::NO_CONTENT);
+
+    // 3. Verify event and delivery still exist in database
+    let ev_check = state.ingestion_service.get_event(tenant_id, event.id).await.unwrap();
+    assert!(ev_check.is_some(), "Event must not be deleted");
+
+    let del_check = deliv_repo.find_by_tenant_and_id(tenant_id, delivery.id).await.unwrap();
+    assert!(del_check.is_some(), "Delivery must not be deleted");
+    assert_eq!(del_check.unwrap().status, "discarded");
+
+    // 4. Already discarded -> 409 Conflict
+    let req_again = Request::builder()
+        .uri(format!("/dlq/{}?destination_id={}", event.id, dest.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_again = app.clone().oneshot(req_again).await.unwrap();
+    assert_eq!(res_again.status(), StatusCode::CONFLICT);
+
+    // 5. Cross-tenant discard -> 404 Not Found
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "dlq-disc-b").await;
+    let req_b = Request::builder()
+        .uri(format!("/dlq/{}?destination_id={}", event.id, dest.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_b = app.oneshot(req_b).await.unwrap();
+    assert_eq!(res_b.status(), StatusCode::NOT_FOUND);
+}
+

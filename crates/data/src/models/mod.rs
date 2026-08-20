@@ -11,7 +11,7 @@ pub mod user;
 
 pub use api_key::ApiKey;
 pub use audit_log::AuditLog;
-pub use delivery::Delivery;
+pub use delivery::{Delivery, DlqRecord};
 pub use delivery_attempt::DeliveryAttempt;
 pub use destination::{Destination, DestinationHealthStats};
 pub use event::{Event, EventDeliveryRecord, EventDeliverySummary, EventWithComputedStatus, VerificationLogRecord};

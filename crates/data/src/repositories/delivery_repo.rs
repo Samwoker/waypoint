@@ -522,4 +522,138 @@ impl<'a> DeliveryRepository<'a> {
 
         Ok((updated.rows_affected() as i64, has_more))
     }
+
+    pub async fn list_dlq_paginated(
+        &self,
+        tenant_id: Uuid,
+        cursor_created_at: Option<DateTime<Utc>>,
+        cursor_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<crate::models::DlqRecord>, CoreError> {
+        let rows = sqlx::query_as::<_, crate::models::DlqRecord>(
+            r#"
+            SELECT
+                d.id AS delivery_id,
+                d.tenant_id,
+                d.event_id,
+                e.event_type,
+                d.destination_id,
+                dest.name AS destination_name,
+                dest.url AS destination_url,
+                d.status::text AS status,
+                d.attempt_count,
+                d.max_attempts,
+                d.last_error,
+                d.created_at,
+                d.updated_at
+            FROM deliveries d
+            JOIN events e ON e.id = d.event_id
+            JOIN destinations dest ON dest.id = d.destination_id
+            WHERE d.tenant_id = $1
+              AND (d.status = 'dead_letter'::delivery_status OR d.status = 'dead_lettered'::delivery_status)
+              AND ($2::timestamptz IS NULL OR (d.created_at, d.id) < ($2, $3))
+            ORDER BY d.created_at DESC, d.id DESC
+            LIMIT $4
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(cursor_created_at)
+        .bind(cursor_id)
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error listing DLQ records: {e}")))?;
+
+        Ok(rows)
+    }
+
+    pub async fn requeue_dlq(
+        &self,
+        tenant_id: Uuid,
+        event_id: Uuid,
+        destination_id: Uuid,
+    ) -> Result<Delivery, CoreError> {
+        let existing = self
+            .find_by_event_and_destination(tenant_id, event_id, destination_id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Delivery for event '{event_id}' and destination '{destination_id}' not found")))?;
+
+        if existing.status != "dead_letter" && existing.status != "dead_lettered" {
+            return Err(CoreError::Validation(format!(
+                "Delivery is not dead-lettered (current status: {})",
+                existing.status
+            )));
+        }
+
+        let row = sqlx::query_as::<_, Delivery>(
+            r#"
+            UPDATE deliveries
+            SET
+                status = 'pending',
+                attempt_count = 0,
+                next_attempt_at = NOW(),
+                updated_at = NOW()
+            WHERE tenant_id = $1 AND id = $2
+            RETURNING
+                id,
+                tenant_id,
+                event_id,
+                COALESCE(subscription_id, '00000000-0000-0000-0000-000000000000'::uuid) AS subscription_id,
+                destination_id,
+                status::text AS status,
+                attempt_count,
+                max_attempts,
+                next_attempt_at AS next_retry_at,
+                created_at,
+                updated_at
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(existing.id)
+        .fetch_one(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error requeuing DLQ delivery: {e}")))?;
+
+        Ok(row)
+    }
+
+    pub async fn discard_dlq(
+        &self,
+        tenant_id: Uuid,
+        event_id: Uuid,
+        destination_id: Uuid,
+    ) -> Result<(), CoreError> {
+        let existing = self
+            .find_by_event_and_destination(tenant_id, event_id, destination_id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Delivery for event '{event_id}' and destination '{destination_id}' not found")))?;
+
+        if existing.status == "discarded" {
+            return Err(CoreError::Conflict("Delivery is already discarded".to_string()));
+        }
+
+        if existing.status != "dead_letter" && existing.status != "dead_lettered" {
+            return Err(CoreError::Validation(format!(
+                "Delivery is not in dead letter queue (current status: {})",
+                existing.status
+            )));
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE deliveries
+            SET
+                status = 'discarded',
+                updated_at = NOW()
+            WHERE tenant_id = $1 AND id = $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(existing.id)
+        .execute(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error discarding DLQ delivery: {e}")))?;
+
+        Ok(())
+    }
 }
