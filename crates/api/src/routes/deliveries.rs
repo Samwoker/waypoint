@@ -4,8 +4,10 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
+use domain::dto::ReplayDeliveryInput;
 
 use crate::error::ApiError;
 use crate::middleware::auth::AuthenticatedTenant;
@@ -13,9 +15,12 @@ use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct ListDeliveriesQuery {
+    pub destination_id: Option<Uuid>,
     pub status: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    pub cursor: Option<String>,
 }
 
 pub async fn list_deliveries(
@@ -24,11 +29,18 @@ pub async fn list_deliveries(
     Query(query): Query<ListDeliveriesQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let limit = query.limit.unwrap_or(20);
-    let offset = query.offset.unwrap_or(0);
 
     let deliveries = state
         .delivery_service
-        .list_deliveries(tenant.tenant_id, query.status.as_deref(), limit, offset)
+        .list_deliveries_paginated(
+            tenant.tenant_id,
+            query.destination_id,
+            query.status.as_deref(),
+            query.from,
+            query.to,
+            limit,
+            query.cursor.as_deref(),
+        )
         .await
         .map_err(ApiError)?;
 
@@ -42,20 +54,28 @@ pub async fn get_delivery(
 ) -> Result<impl IntoResponse, ApiError> {
     let delivery = state
         .delivery_service
-        .get_delivery(tenant.tenant_id, id)
+        .get_delivery_detail(tenant.tenant_id, id)
         .await
-        .map_err(ApiError)?
-        .ok_or_else(|| ApiError(relay_core::error::CoreError::NotFound(format!("Delivery '{id}' not found"))))?;
+        .map_err(ApiError)?;
 
     Ok((StatusCode::OK, Json(delivery)))
 }
 
-pub async fn list_delivery_attempts(
-    _tenant: AuthenticatedTenant,
-    State(_state): State<AppState>,
-    Path(_id): Path<Uuid>,
+pub async fn replay_delivery(
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    input: Option<Json<ReplayDeliveryInput>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(StatusCode::NOT_IMPLEMENTED)
+    let reset_attempt_count = input.map(|Json(i)| i.reset_attempt_count).unwrap_or(false);
+
+    let delivery = state
+        .delivery_service
+        .replay_delivery(tenant.tenant_id, id, reset_attempt_count)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(delivery)))
 }
 
 pub async fn retry_delivery(
@@ -65,9 +85,23 @@ pub async fn retry_delivery(
 ) -> Result<impl IntoResponse, ApiError> {
     let delivery = state
         .delivery_service
-        .retry_delivery(tenant.tenant_id, id)
+        .replay_delivery(tenant.tenant_id, id, false)
         .await
         .map_err(ApiError)?;
 
     Ok((StatusCode::OK, Json(delivery)))
+}
+
+pub async fn list_delivery_attempts(
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let delivery = state
+        .delivery_service
+        .get_delivery_detail(tenant.tenant_id, id)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(delivery.attempts)))
 }

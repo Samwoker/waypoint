@@ -348,9 +348,79 @@ pub struct DeliveryView {
     pub status: String,
     pub attempt_count: i32,
     pub max_attempts: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_retry_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedDeliveriesView {
+    pub deliveries: Vec<DeliveryView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryDetailAttemptView {
+    pub id: Uuid,
+    pub attempt_number: i32,
+    #[serde(alias = "status_code")]
+    pub http_status: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_body_snippet: Option<String>,
+    #[serde(alias = "duration_ms")]
+    pub latency_ms: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryDetailView {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub event_id: Uuid,
+    pub subscription_id: Uuid,
+    pub destination_id: Uuid,
+    pub status: String,
+    pub attempt_count: i32,
+    pub max_attempts: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<DateTime<Utc>>,
+    pub attempts: Vec<DeliveryDetailAttemptView>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReplayDeliveryInput {
+    #[serde(default)]
+    pub reset_attempt_count: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayEventResult {
+    pub event_id: Uuid,
+    pub deliveries_created: usize,
+    pub deliveries_reset: usize,
+    pub total_deliveries: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReplayBatchInput {
+    pub destination_id: Option<Uuid>,
+    pub source_id: Option<Uuid>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub status_filter: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayBatchResult {
+    pub replayed_count: i64,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

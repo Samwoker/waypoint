@@ -1,10 +1,15 @@
 use std::sync::Arc;
+use base64::Engine;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use data::repositories::DeliveryRepository;
 use relay_core::error::CoreError;
-use crate::dto::{DeliveryAttemptView, DeliveryView};
+use crate::dto::{
+    DeliveryAttemptView, DeliveryDetailAttemptView, DeliveryDetailView, DeliveryView,
+    PaginatedDeliveriesView, ReplayBatchInput, ReplayBatchResult,
+};
 
 #[derive(Clone)]
 pub struct DeliveryService {
@@ -40,6 +45,58 @@ impl DeliveryService {
         }))
     }
 
+    pub async fn get_delivery_detail(
+        &self,
+        tenant_id: Uuid,
+        delivery_id: Uuid,
+    ) -> Result<DeliveryDetailView, CoreError> {
+        let repo = DeliveryRepository::new(&self.pool);
+        let delivery = repo
+            .find_by_tenant_and_id(tenant_id, delivery_id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Delivery '{delivery_id}' not found")))?;
+
+        let attempts = repo.list_attempts_by_delivery_id(delivery.id).await?;
+
+        let attempt_views = attempts
+            .into_iter()
+            .map(|a| {
+                let snippet = a.response_body.map(|body| {
+                    if body.len() > 500 {
+                        format!("{}...", &body[..500])
+                    } else {
+                        body
+                    }
+                });
+
+                DeliveryDetailAttemptView {
+                    id: a.id,
+                    attempt_number: a.attempt_number,
+                    http_status: a.status_code,
+                    response_body_snippet: snippet,
+                    latency_ms: a.execution_duration_ms,
+                    error_message: a.error_message,
+                    created_at: a.created_at,
+                }
+            })
+            .collect();
+
+        Ok(DeliveryDetailView {
+            id: delivery.id,
+            tenant_id: delivery.tenant_id,
+            event_id: delivery.event_id,
+            subscription_id: delivery.subscription_id,
+            destination_id: delivery.destination_id,
+            status: delivery.status,
+            attempt_count: delivery.attempt_count,
+            max_attempts: delivery.max_attempts,
+            next_retry_at: delivery.next_retry_at,
+            attempts: attempt_views,
+            created_at: delivery.created_at,
+            updated_at: delivery.updated_at,
+        })
+    }
+
     pub async fn list_deliveries(
         &self,
         tenant_id: Uuid,
@@ -71,22 +128,170 @@ impl DeliveryService {
             .collect())
     }
 
+    pub async fn list_deliveries_paginated(
+        &self,
+        tenant_id: Uuid,
+        destination_id: Option<Uuid>,
+        status: Option<&str>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<PaginatedDeliveriesView, CoreError> {
+        let limit = if limit <= 0 || limit > 100 { 20 } else { limit };
+
+        if let Some(st) = status {
+            if !["pending", "running", "delivered", "failed", "dead_letter"].contains(&st) {
+                return Err(CoreError::Validation(format!(
+                    "Invalid status filter '{st}'. Valid values: pending, running, delivered, failed, dead_letter"
+                )));
+            }
+        }
+
+        let (cursor_created_at, cursor_id) = if let Some(c) = cursor {
+            let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(c.trim())
+                .or_else(|_| base64::engine::general_purpose::STANDARD.decode(c.trim()))
+                .map_err(|_| CoreError::Validation("Invalid cursor encoding".to_string()))?;
+
+            let decoded_str = String::from_utf8(decoded)
+                .map_err(|_| CoreError::Validation("Invalid cursor text".to_string()))?;
+
+            let parts: Vec<&str> = decoded_str.split('_').collect();
+            if parts.len() < 2 {
+                return Err(CoreError::Validation("Invalid cursor structure".to_string()));
+            }
+
+            let ts_str = parts[..parts.len() - 1].join("_");
+            let id_str = parts[parts.len() - 1];
+
+            let ts = DateTime::parse_from_rfc3339(&ts_str)
+                .map_err(|_| CoreError::Validation("Invalid cursor timestamp".to_string()))?
+                .with_timezone(&Utc);
+
+            let id = Uuid::parse_str(id_str)
+                .map_err(|_| CoreError::Validation("Invalid cursor UUID".to_string()))?;
+
+            (Some(ts), Some(id))
+        } else {
+            (None, None)
+        };
+
+        let repo = DeliveryRepository::new(&self.pool);
+        let mut deliveries = repo
+            .list_paginated(
+                tenant_id,
+                destination_id,
+                status,
+                from,
+                to,
+                cursor_created_at,
+                cursor_id,
+                limit + 1,
+            )
+            .await?;
+
+        let has_more = deliveries.len() > limit as usize;
+        if has_more {
+            deliveries.truncate(limit as usize);
+        }
+
+        let next_cursor = if has_more {
+            deliveries.last().map(|last| {
+                let payload = format!("{}_{}", last.created_at.to_rfc3339(), last.id);
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload)
+            })
+        } else {
+            None
+        };
+
+        let delivery_views = deliveries
+            .into_iter()
+            .map(|d| DeliveryView {
+                id: d.id,
+                tenant_id: d.tenant_id,
+                event_id: d.event_id,
+                subscription_id: d.subscription_id,
+                destination_id: d.destination_id,
+                status: d.status,
+                attempt_count: d.attempt_count,
+                max_attempts: d.max_attempts,
+                next_retry_at: d.next_retry_at,
+                created_at: d.created_at,
+                updated_at: d.updated_at,
+            })
+            .collect();
+
+        Ok(PaginatedDeliveriesView {
+            deliveries: delivery_views,
+            next_cursor,
+            has_more,
+        })
+    }
+
+    pub async fn replay_delivery(
+        &self,
+        tenant_id: Uuid,
+        delivery_id: Uuid,
+        reset_attempt_count: bool,
+    ) -> Result<DeliveryView, CoreError> {
+        let repo = DeliveryRepository::new(&self.pool);
+        let delivery = repo.replay_delivery(tenant_id, delivery_id, reset_attempt_count).await?;
+
+        Ok(DeliveryView {
+            id: delivery.id,
+            tenant_id: delivery.tenant_id,
+            event_id: delivery.event_id,
+            subscription_id: delivery.subscription_id,
+            destination_id: delivery.destination_id,
+            status: delivery.status,
+            attempt_count: delivery.attempt_count,
+            max_attempts: delivery.max_attempts,
+            next_retry_at: delivery.next_retry_at,
+            created_at: delivery.created_at,
+            updated_at: delivery.updated_at,
+        })
+    }
+
+    pub async fn replay_batch(
+        &self,
+        tenant_id: Uuid,
+        input: ReplayBatchInput,
+    ) -> Result<ReplayBatchResult, CoreError> {
+        if let Some(ref st) = input.status_filter {
+            if !["pending", "running", "delivered", "failed", "dead_letter"].contains(&st.as_str()) {
+                return Err(CoreError::Validation(format!(
+                    "Invalid status filter '{st}'. Valid values: pending, running, delivered, failed, dead_letter"
+                )));
+            }
+        }
+
+        let limit = 1000;
+        let repo = DeliveryRepository::new(&self.pool);
+        let (replayed_count, has_more) = repo
+            .replay_batch(
+                tenant_id,
+                input.destination_id,
+                input.source_id,
+                input.from,
+                input.to,
+                input.status_filter.as_deref(),
+                limit,
+            )
+            .await?;
+
+        Ok(ReplayBatchResult {
+            replayed_count,
+            has_more,
+        })
+    }
+
     pub async fn retry_delivery(
         &self,
         tenant_id: Uuid,
         delivery_id: Uuid,
     ) -> Result<DeliveryView, CoreError> {
-        let repo = DeliveryRepository::new(&self.pool);
-        let delivery = repo
-            .find_by_tenant_and_id(tenant_id, delivery_id)
-            .await?
-            .ok_or_else(|| CoreError::NotFound(format!("Delivery '{delivery_id}' not found")))?;
-
-        repo.update_status(delivery.id, "pending", 0, Some(chrono::Utc::now())).await?;
-
-        self.get_delivery(tenant_id, delivery_id)
-            .await?
-            .ok_or_else(|| CoreError::NotFound(format!("Delivery '{delivery_id}' not found")))
+        self.replay_delivery(tenant_id, delivery_id, false).await
     }
 
     pub async fn list_dlq(

@@ -7,7 +7,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
-use domain::dto::CreateEventInput;
+use domain::dto::{CreateEventInput, ReplayBatchInput};
 
 use crate::error::ApiError;
 use crate::middleware::auth::AuthenticatedTenant;
@@ -123,10 +123,38 @@ pub async fn get_event_deliveries(
     Ok((StatusCode::OK, Json(deliveries)))
 }
 
-pub async fn retry_event(
-    _tenant: AuthenticatedTenant,
-    State(_state): State<AppState>,
-    Path(_id): Path<Uuid>,
+pub async fn replay_event(
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(StatusCode::NOT_IMPLEMENTED)
+    let result = state
+        .fanout_service
+        .fan_out_event(tenant.tenant_id, id)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(result)))
+}
+
+pub async fn retry_event(
+    tenant: AuthenticatedTenant,
+    state: State<AppState>,
+    path: Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    replay_event(tenant, state, path).await
+}
+
+pub async fn replay_events_batch(
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Json(input): Json<ReplayBatchInput>,
+) -> Result<impl IntoResponse, ApiError> {
+    let result = state
+        .delivery_service
+        .replay_batch(tenant.tenant_id, input)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(result)))
 }

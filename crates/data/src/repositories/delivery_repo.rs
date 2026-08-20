@@ -70,6 +70,40 @@ impl<'a> DeliveryRepository<'a> {
         Ok(row)
     }
 
+    pub async fn find_by_event_and_destination(
+        &self,
+        tenant_id: Uuid,
+        event_id: Uuid,
+        destination_id: Uuid,
+    ) -> Result<Option<Delivery>, CoreError> {
+        let row = sqlx::query_as::<_, Delivery>(
+            r#"
+            SELECT
+                id,
+                tenant_id,
+                event_id,
+                COALESCE(subscription_id, '00000000-0000-0000-0000-000000000000'::uuid) AS subscription_id,
+                destination_id,
+                status::text AS status,
+                attempt_count,
+                max_attempts,
+                next_attempt_at AS next_retry_at,
+                created_at,
+                updated_at
+            FROM deliveries
+            WHERE tenant_id = $1 AND event_id = $2 AND destination_id = $3
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(event_id)
+        .bind(destination_id)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error fetching delivery by event and destination: {e}")))?;
+
+        Ok(row)
+    }
+
     pub async fn list_by_tenant(
         &self,
         tenant_id: Uuid,
@@ -132,6 +166,88 @@ impl<'a> DeliveryRepository<'a> {
             .await
         }
         .map_err(|e| CoreError::Internal(format!("Database error listing deliveries: {e}")))?;
+
+        Ok(rows)
+    }
+
+    pub async fn list_paginated(
+        &self,
+        tenant_id: Uuid,
+        destination_id: Option<Uuid>,
+        status: Option<&str>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        cursor_created_at: Option<DateTime<Utc>>,
+        cursor_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<Delivery>, CoreError> {
+        let rows = sqlx::query_as::<_, Delivery>(
+            r#"
+            SELECT
+                id,
+                tenant_id,
+                event_id,
+                COALESCE(subscription_id, '00000000-0000-0000-0000-000000000000'::uuid) AS subscription_id,
+                destination_id,
+                status::text AS status,
+                attempt_count,
+                max_attempts,
+                next_attempt_at AS next_retry_at,
+                created_at,
+                updated_at
+            FROM deliveries
+            WHERE tenant_id = $1
+              AND ($2::uuid IS NULL OR destination_id = $2)
+              AND ($3::delivery_status IS NULL OR status = $3::delivery_status)
+              AND ($4::timestamptz IS NULL OR created_at >= $4)
+              AND ($5::timestamptz IS NULL OR created_at <= $5)
+              AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+            ORDER BY created_at DESC, id DESC
+            LIMIT $8
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(destination_id)
+        .bind(status)
+        .bind(from)
+        .bind(to)
+        .bind(cursor_created_at)
+        .bind(cursor_id)
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error querying paginated deliveries: {e}")))?;
+
+        Ok(rows)
+    }
+
+    pub async fn list_attempts_by_delivery_id(
+        &self,
+        delivery_id: Uuid,
+    ) -> Result<Vec<DeliveryAttempt>, CoreError> {
+        let rows = sqlx::query_as::<_, DeliveryAttempt>(
+            r#"
+            SELECT
+                id,
+                delivery_id,
+                attempt_number,
+                response_status,
+                request_headers,
+                request_body,
+                response_headers,
+                response_body,
+                error_message,
+                duration_ms,
+                created_at
+            FROM delivery_attempts
+            WHERE delivery_id = $1
+            ORDER BY attempt_number ASC
+            "#,
+        )
+        .bind(delivery_id)
+        .fetch_all(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error listing delivery attempts: {e}")))?;
 
         Ok(rows)
     }
@@ -303,5 +419,107 @@ impl<'a> DeliveryRepository<'a> {
         .map_err(|e| CoreError::Internal(format!("Database error updating delivery status: {e}")))?;
 
         Ok(())
+    }
+
+    pub async fn replay_delivery(
+        &self,
+        tenant_id: Uuid,
+        id: Uuid,
+        reset_attempt_count: bool,
+    ) -> Result<Delivery, CoreError> {
+        let row = sqlx::query_as::<_, Delivery>(
+            r#"
+            UPDATE deliveries
+            SET
+                status = 'pending',
+                next_attempt_at = NOW(),
+                attempt_count = CASE WHEN $3 = TRUE THEN 0 ELSE attempt_count END,
+                updated_at = NOW()
+            WHERE tenant_id = $1 AND id = $2
+            RETURNING
+                id,
+                tenant_id,
+                event_id,
+                COALESCE(subscription_id, '00000000-0000-0000-0000-000000000000'::uuid) AS subscription_id,
+                destination_id,
+                status::text AS status,
+                attempt_count,
+                max_attempts,
+                next_attempt_at AS next_retry_at,
+                created_at,
+                updated_at
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(reset_attempt_count)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error replaying delivery: {e}")))?
+        .ok_or_else(|| CoreError::NotFound(format!("Delivery '{id}' not found")))?;
+
+        Ok(row)
+    }
+
+    pub async fn replay_batch(
+        &self,
+        tenant_id: Uuid,
+        destination_id: Option<Uuid>,
+        source_id: Option<Uuid>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        status_filter: Option<&str>,
+        limit: i64,
+    ) -> Result<(i64, bool), CoreError> {
+        // Query matching deliveries limit + 1
+        let ids = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT d.id
+            FROM deliveries d
+            JOIN events e ON e.id = d.event_id
+            WHERE d.tenant_id = $1
+              AND ($2::uuid IS NULL OR d.destination_id = $2)
+              AND ($3::uuid IS NULL OR e.source_id = $3)
+              AND ($4::timestamptz IS NULL OR d.created_at >= $4)
+              AND ($5::timestamptz IS NULL OR d.created_at <= $5)
+              AND ($6::delivery_status IS NULL OR d.status = $6::delivery_status)
+            ORDER BY d.created_at DESC
+            LIMIT $7
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(destination_id)
+        .bind(source_id)
+        .bind(from)
+        .bind(to)
+        .bind(status_filter)
+        .bind(limit + 1)
+        .fetch_all(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error finding matching deliveries for batch replay: {e}")))?;
+
+        let has_more = ids.len() > limit as usize;
+        let update_ids: Vec<Uuid> = ids.into_iter().take(limit as usize).collect();
+
+        if update_ids.is_empty() {
+            return Ok((0, false));
+        }
+
+        let updated = sqlx::query(
+            r#"
+            UPDATE deliveries
+            SET
+                status = 'pending',
+                next_attempt_at = NOW(),
+                updated_at = NOW()
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(&update_ids)
+        .execute(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error updating batch deliveries: {e}")))?;
+
+        Ok((updated.rows_affected() as i64, has_more))
     }
 }
