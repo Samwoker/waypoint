@@ -77,9 +77,9 @@ pub struct CreateDestinationInput {
     pub description: Option<String>,
     pub rate_limit_rps: Option<i32>,
     pub timeout_ms: Option<i32>,
-    pub secret: Option<String>,
     pub max_retries: Option<i32>,
     pub headers: Option<serde_json::Value>,
+    pub secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +89,10 @@ pub struct UpdateDestinationInput {
     pub description: Option<String>,
     pub rate_limit_rps: Option<i32>,
     pub timeout_ms: Option<i32>,
+    pub max_retries: Option<i32>,
+    pub retry_backoff_strategy: Option<String>,
     pub is_active: Option<bool>,
+    pub secret: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,12 +101,42 @@ pub struct DestinationView {
     pub tenant_id: Uuid,
     pub name: String,
     pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub rate_limit_rps: Option<i32>,
-    pub timeout_ms: i32,
+    pub status: String,
     pub is_active: bool,
+    pub consecutive_failures: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub circuit_opened_at: Option<DateTime<Utc>>,
+    pub max_retries: i32,
+    pub timeout_ms: i32,
+    pub retry_backoff_strategy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_rps: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestDestinationResponse {
+    pub success: bool,
+    pub http_status: Option<i32>,
+    pub latency_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DestinationHealthView {
+    pub status: String,
+    pub consecutive_failures: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub circuit_opened_at: Option<DateTime<Utc>>,
+    pub success_rate: f64,
+    pub total_attempts: i64,
+    pub successful_attempts: i64,
 }
 
 // --- Subscription DTOs ---

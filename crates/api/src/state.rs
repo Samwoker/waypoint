@@ -50,7 +50,12 @@ impl AppState {
         let auth_service = Arc::new(AuthService::new(pool.clone(), config.jwt_secret.clone()));
         let tenant_service = Arc::new(TenantService::new(pool.clone()));
         let source_service = Arc::new(SourceService::new(pool.clone(), key_bytes));
-        let destination_service = Arc::new(DestinationService::new(pool.clone(), key_bytes));
+        let destination_service = Arc::new(DestinationService::with_config(
+            pool.clone(),
+            key_bytes,
+            config.environment.clone(),
+            http_client.clone(),
+        ));
         let subscription_service = Arc::new(SubscriptionService::new(pool.clone()));
         let ingestion_service = Arc::new(IngestionService::new(pool.clone(), queue.clone()));
         let fanout_service = Arc::new(FanoutService::new(pool.clone(), queue.clone()));

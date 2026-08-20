@@ -117,8 +117,8 @@ async fn test_successful_destination_creation() {
     assert!(json_res["created_at"].is_string());
     assert!(json_res["updated_at"].is_string());
 
-    // 5. Secret is never returned
-    assert!(json_res.get("secret").is_none());
+    // Secret is returned once on creation
+    assert_eq!(json_res["secret"], "whsec_client_secret_xyz123");
     assert!(json_res.get("secret_encrypted").is_none());
     assert!(json_res.get("encrypted_secret").is_none());
 
@@ -640,4 +640,765 @@ async fn test_get_destinations_database_failure() {
         }
         err => panic!("Expected CoreError::Internal, got {:?}", err),
     }
+}
+
+// 7. GET /destinations/{destination_id} (Endpoint #27)
+#[tokio::test]
+async fn test_get_destination_by_id_existing() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "get-dest-by-id").await;
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Get Single Dest".to_string(),
+                url: "https://get-single.example.com/hooks".to_string(),
+                description: Some("Single destination test".to_string()),
+                rate_limit_rps: Some(25),
+                timeout_ms: Some(8000),
+                max_retries: Some(7),
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/destinations/{}", dest.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(json_res["id"], dest.id.to_string());
+    assert_eq!(json_res["name"], "Get Single Dest");
+    assert_eq!(json_res["status"], "active");
+    assert_eq!(json_res["consecutive_failures"], 0);
+    assert_eq!(json_res["max_retries"], 7);
+    assert_eq!(json_res["timeout_ms"], 8000);
+    assert_eq!(json_res["retry_backoff_strategy"], "exponential");
+    assert!(json_res.get("secret").is_none());
+    assert!(json_res.get("secret_encrypted").is_none());
+
+    // Also test /v1/destinations/{id}
+    let req_v1 = Request::builder()
+        .uri(format!("/v1/destinations/{}", dest.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_v1 = app.oneshot(req_v1).await.unwrap();
+    assert_eq!(res_v1.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_get_destination_by_id_nonexistent() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (_tenant_id, raw_key) = create_test_tenant_and_key(&state, "get-dest-none").await;
+
+    let req = Request::builder()
+        .uri(format!("/destinations/{}", Uuid::new_v4()))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_get_destination_by_id_cross_tenant() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_a, _key_a) = create_test_tenant_and_key(&state, "dest-cross-a").await;
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "dest-cross-b").await;
+
+    let dest_a = state
+        .destination_service
+        .create_destination(
+            tenant_a,
+            CreateDestinationInput {
+                name: "Tenant A Dest".to_string(),
+                url: "https://tenant-a.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/destinations/{}", dest_a.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+// 8. POST /destinations (Endpoint #26)
+#[tokio::test]
+async fn test_post_destination_secret_generation_and_encryption() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "post-dest-sec").await;
+
+    let req = Request::builder()
+        .uri("/destinations")
+        .method("POST")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::from(
+            json!({
+                "name": "Auto Secret Dest",
+                "url": "https://auto-sec.example.com/webhook",
+                "max_retries": 10,
+                "timeout_ms": 10000
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert!(json_res["secret"].is_string());
+    let plaintext_secret = json_res["secret"].as_str().unwrap();
+    assert!(!plaintext_secret.is_empty());
+
+    // Verify secret is NOT stored plaintext in PostgreSQL
+    let dest_id = Uuid::parse_str(json_res["id"].as_str().unwrap()).unwrap();
+    let dest_repo = data::repositories::DestinationRepository::new(&pool);
+    let db_dest = dest_repo.find_by_tenant_and_id(tenant_id, dest_id).await.unwrap().unwrap();
+
+    assert!(db_dest.secret_encrypted.is_some());
+    let encrypted_in_db = db_dest.secret_encrypted.unwrap();
+    assert_ne!(encrypted_in_db, plaintext_secret);
+
+    // Verify decryption matches
+    let decrypted_bytes = relay_core::crypto::decrypt_secret(&encrypted_in_db, &state.destination_service.encryption_key).unwrap();
+    let decrypted_str = String::from_utf8(decrypted_bytes).unwrap();
+    assert_eq!(decrypted_str, plaintext_secret);
+}
+
+// 9. PATCH /destinations/{destination_id} (Endpoint #28)
+#[tokio::test]
+async fn test_patch_destination_updates_and_url_health_reset() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "patch-dest").await;
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Original Dest".to_string(),
+                url: "https://orig.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: Some(5000),
+                max_retries: Some(3),
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Artificially simulate circuit break / consecutive failures in DB metadata
+    sqlx::query(
+        r#"
+        UPDATE destinations
+        SET metadata = metadata || jsonb_build_object('consecutive_failures', 5, 'circuit_opened_at', NOW())
+        WHERE id = $1
+        "#,
+    )
+    .bind(dest.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Verify failures are 5
+    let before = state.destination_service.get_destination(tenant_id, dest.id).await.unwrap().unwrap();
+    assert_eq!(before.consecutive_failures, 5);
+    assert!(before.circuit_opened_at.is_some());
+
+    // Patch URL -> should reset consecutive_failures = 0 and circuit_opened_at = None
+    let patch_payload = json!({
+        "name": "Updated Dest Name",
+        "url": "https://new-url.example.com/hook",
+        "max_retries": 15,
+        "timeout_ms": 12000,
+        "retry_backoff_strategy": "linear"
+    });
+
+    let req = Request::builder()
+        .uri(format!("/destinations/{}", dest.id))
+        .method("PATCH")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::from(patch_payload.to_string()))
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(json_res["name"], "Updated Dest Name");
+    assert_eq!(json_res["url"], "https://new-url.example.com/hook");
+    assert_eq!(json_res["max_retries"], 15);
+    assert_eq!(json_res["timeout_ms"], 12000);
+    assert_eq!(json_res["retry_backoff_strategy"], "linear");
+    assert_eq!(json_res["consecutive_failures"], 0);
+    assert!(json_res["circuit_opened_at"].is_null());
+
+    // Direct secret mutation attempt is rejected
+    let reject_req = Request::builder()
+        .uri(format!("/destinations/{}", dest.id))
+        .method("PATCH")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::from(json!({"secret": "hacked_secret"}).to_string()))
+        .unwrap();
+
+    let reject_res = app.oneshot(reject_req).await.unwrap();
+    assert_eq!(reject_res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+// 10. DELETE /destinations/{destination_id} (Endpoint #29)
+#[tokio::test]
+async fn test_delete_destination_soft_delete_preserves_history() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "del-dest").await;
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "To Delete".to_string(),
+                url: "https://delete.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Create a source & event & delivery for historical preservation test
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            domain::dto::CreateSourceInput {
+                name: "Del Source".to_string(),
+                slug: format!("del-src-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = data::repositories::EventRepository::new(&pool)
+        .create(tenant_id, source.id, "test.del", None, json!({}), json!({"test": 1}))
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            domain::dto::CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["*".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let delivery = data::repositories::DeliveryRepository::new(&pool)
+        .create(tenant_id, event.id, sub.id, dest.id, 5)
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/destinations/{}", dest.id))
+        .method("DELETE")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    // Verify GET returns 404
+    let get_req = Request::builder()
+        .uri(format!("/destinations/{}", dest.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let get_res = app.oneshot(get_req).await.unwrap();
+    assert_eq!(get_res.status(), StatusCode::NOT_FOUND);
+
+    // Verify delivery history remains intact in DB
+    let deliv_repo = data::repositories::DeliveryRepository::new(&pool);
+    let historical_delivery = deliv_repo.find_by_tenant_and_id(tenant_id, delivery.id).await.unwrap();
+    assert!(historical_delivery.is_some());
+    assert_eq!(historical_delivery.unwrap().destination_id, dest.id);
+}
+
+// 11. POST /destinations/{destination_id}/pause (Endpoint #30)
+#[tokio::test]
+async fn test_pause_destination_active_and_skip_logic() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "pause-dest").await;
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Pause Dest".to_string(),
+                url: "https://pause.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/destinations/{}/pause", dest.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(json_res["status"], "paused");
+    assert_eq!(json_res["is_active"], false);
+
+    // Pausing again is idempotent
+    let req2 = Request::builder()
+        .uri(format!("/destinations/{}/pause", dest.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res2 = app.oneshot(req2).await.unwrap();
+    assert_eq!(res2.status(), StatusCode::OK);
+}
+
+// 12. POST /destinations/{destination_id}/resume (Endpoint #31)
+#[tokio::test]
+async fn test_resume_destination_resets_circuit_and_reschedules_deliveries() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "resume-dest").await;
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Resume Dest".to_string(),
+                url: "https://resume.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Pause it first
+    state.destination_service.pause_destination(tenant_id, dest.id).await.unwrap();
+
+    // Create a delayed delivery
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            domain::dto::CreateSourceInput {
+                name: "Resume Source".to_string(),
+                slug: format!("res-src-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = data::repositories::EventRepository::new(&pool)
+        .create(tenant_id, source.id, "test.res", None, json!({}), json!({}))
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            domain::dto::CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["*".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let delivery = data::repositories::DeliveryRepository::new(&pool)
+        .create(tenant_id, event.id, sub.id, dest.id, 5)
+        .await
+        .unwrap();
+
+    // Set delivery next_attempt_at in the far future
+    sqlx::query(
+        r#"
+        UPDATE deliveries
+        SET next_attempt_at = NOW() + interval '1 day', status = 'failed'
+        WHERE id = $1
+        "#,
+    )
+    .bind(delivery.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Resume destination
+    let req = Request::builder()
+        .uri(format!("/destinations/{}/resume", dest.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(json_res["status"], "active");
+    assert_eq!(json_res["is_active"], true);
+    assert_eq!(json_res["consecutive_failures"], 0);
+    assert!(json_res["circuit_opened_at"].is_null());
+
+    // Verify delivery was rescheduled for immediate poll (next_attempt_at <= NOW)
+    let deliv_repo = data::repositories::DeliveryRepository::new(&pool);
+    let updated_delivery = deliv_repo.find_by_tenant_and_id(tenant_id, delivery.id).await.unwrap().unwrap();
+    assert_eq!(updated_delivery.status, "pending");
+    assert!(updated_delivery.next_retry_at <= Some(chrono::Utc::now()));
+}
+
+// 13. POST /destinations/{destination_id}/test (Endpoint #32)
+async fn spawn_mock_receiver(status: StatusCode, delay: Option<std::time::Duration>) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = axum::Router::new().route(
+        "/webhook",
+        axum::routing::post(move || async move {
+            if let Some(d) = delay {
+                tokio::time::sleep(d).await;
+            }
+            status
+        }),
+    );
+
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (format!("http://127.0.0.1:{port}/webhook"), handle)
+}
+
+#[tokio::test]
+async fn test_destination_test_endpoint_success_and_failures() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "test-dest-ep").await;
+
+    // 1. Successful destination
+    let (mock_url_200, _h1) = spawn_mock_receiver(StatusCode::OK, None).await;
+    let dest_200 = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Mock 200 Dest".to_string(),
+                url: mock_url_200,
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: Some(2000),
+                max_retries: None,
+                headers: None,
+                secret: Some("test_secret".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let req_200 = Request::builder()
+        .uri(format!("/destinations/{}/test", dest_200.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_200 = app.clone().oneshot(req_200).await.unwrap();
+    assert_eq!(res_200.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res_200.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json_res["success"], true);
+    assert_eq!(json_res["http_status"], 200);
+    assert!(json_res["latency_ms"].as_i64().unwrap() >= 0);
+
+    // 2. 500 error destination
+    let (mock_url_500, _h2) = spawn_mock_receiver(StatusCode::INTERNAL_SERVER_ERROR, None).await;
+    let dest_500 = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Mock 500 Dest".to_string(),
+                url: mock_url_500,
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: Some(2000),
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req_500 = Request::builder()
+        .uri(format!("/destinations/{}/test", dest_500.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_500 = app.clone().oneshot(req_500).await.unwrap();
+    assert_eq!(res_500.status(), StatusCode::OK);
+
+    let body_bytes_500 = axum::body::to_bytes(res_500.into_body(), usize::MAX).await.unwrap();
+    let json_res_500: Value = serde_json::from_slice(&body_bytes_500).unwrap();
+    assert_eq!(json_res_500["success"], false);
+    assert_eq!(json_res_500["http_status"], 500);
+
+    // 3. Timeout destination
+    let (mock_url_timeout, _h3) = spawn_mock_receiver(StatusCode::OK, Some(std::time::Duration::from_millis(500))).await;
+    let dest_timeout = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Mock Timeout Dest".to_string(),
+                url: mock_url_timeout,
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: Some(50), // 50ms timeout < 500ms delay
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req_timeout = Request::builder()
+        .uri(format!("/destinations/{}/test", dest_timeout.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_timeout = app.oneshot(req_timeout).await.unwrap();
+    assert_eq!(res_timeout.status(), StatusCode::OK);
+
+    let body_bytes_to = axum::body::to_bytes(res_timeout.into_body(), usize::MAX).await.unwrap();
+    let json_res_to: Value = serde_json::from_slice(&body_bytes_to).unwrap();
+    assert_eq!(json_res_to["success"], false);
+
+    // Security & side-effect check: Verify no events or deliveries were created
+    let event_count: (i64,) = sqlx::query_as("SELECT count(*) FROM events WHERE tenant_id = $1")
+        .bind(tenant_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(event_count.0, 0);
+
+    let delivery_count: (i64,) = sqlx::query_as("SELECT count(*) FROM deliveries WHERE tenant_id = $1")
+        .bind(tenant_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(delivery_count.0, 0);
+}
+
+// 14. GET /destinations/{destination_id}/health (Endpoint #33)
+#[tokio::test]
+async fn test_destination_health_endpoint() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "health-dest").await;
+
+    let dest = state
+        .destination_service
+        .create_destination(
+            tenant_id,
+            CreateDestinationInput {
+                name: "Health Dest".to_string(),
+                url: "https://health.example.com/hook".to_string(),
+                description: None,
+                rate_limit_rps: None,
+                timeout_ms: None,
+                max_retries: None,
+                headers: None,
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // 1. Initial health (no attempts) -> success_rate = 1.0
+    let req1 = Request::builder()
+        .uri(format!("/destinations/{}/health", dest.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res1 = app.clone().oneshot(req1).await.unwrap();
+    assert_eq!(res1.status(), StatusCode::OK);
+
+    let body_bytes1 = axum::body::to_bytes(res1.into_body(), usize::MAX).await.unwrap();
+    let json_res1: Value = serde_json::from_slice(&body_bytes1).unwrap();
+
+    assert_eq!(json_res1["status"], "active");
+    assert_eq!(json_res1["consecutive_failures"], 0);
+    assert_eq!(json_res1["total_attempts"], 0);
+    assert_eq!(json_res1["success_rate"], 1.0);
+
+    // 2. Add 3 successful attempts and 1 failed attempt in the last hour
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            domain::dto::CreateSourceInput {
+                name: "Health Source".to_string(),
+                slug: format!("hlth-src-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let event = data::repositories::EventRepository::new(&pool)
+        .create(tenant_id, source.id, "test.health", None, json!({}), json!({}))
+        .await
+        .unwrap();
+
+    let sub = state
+        .subscription_service
+        .create_subscription(
+            tenant_id,
+            domain::dto::CreateSubscriptionInput {
+                source_id: source.id,
+                destination_id: dest.id,
+                event_types: vec!["*".to_string()],
+                filter_rules: None,
+                transformation_template: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let delivery = data::repositories::DeliveryRepository::new(&pool)
+        .create(tenant_id, event.id, sub.id, dest.id, 5)
+        .await
+        .unwrap();
+
+    let deliv_repo = data::repositories::DeliveryRepository::new(&pool);
+    // 3 successes (200)
+    for i in 1..=3 {
+        deliv_repo
+            .record_attempt(delivery.id, i, Some(200), None, None, None, None, None, Some(50))
+            .await
+            .unwrap();
+    }
+    // 1 failure (500)
+    deliv_repo
+        .record_attempt(delivery.id, 4, Some(500), None, None, None, None, Some("Internal Server Error"), Some(60))
+        .await
+        .unwrap();
+
+    let req2 = Request::builder()
+        .uri(format!("/destinations/{}/health", dest.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res2 = app.oneshot(req2).await.unwrap();
+    assert_eq!(res2.status(), StatusCode::OK);
+
+    let body_bytes2 = axum::body::to_bytes(res2.into_body(), usize::MAX).await.unwrap();
+    let json_res2: Value = serde_json::from_slice(&body_bytes2).unwrap();
+
+    assert_eq!(json_res2["total_attempts"], 4);
+    assert_eq!(json_res2["successful_attempts"], 3);
+    assert_eq!(json_res2["success_rate"], 0.75);
 }

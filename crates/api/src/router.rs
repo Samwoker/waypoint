@@ -82,6 +82,21 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/sources/:id/verification-log", get(sources::get_source_verification_log))
         // Destinations API
         .route(
+            "/destinations",
+            get(destinations::list_destinations).post(destinations::create_destination),
+        )
+        .route(
+            "/destinations/:id",
+            get(destinations::get_destination)
+                .put(destinations::update_destination)
+                .patch(destinations::update_destination)
+                .delete(destinations::delete_destination),
+        )
+        .route("/destinations/:id/pause", post(destinations::pause_destination))
+        .route("/destinations/:id/resume", post(destinations::resume_destination))
+        .route("/destinations/:id/test", post(destinations::test_destination))
+        .route("/destinations/:id/health", get(destinations::get_destination_health))
+        .route(
             "/v1/destinations",
             get(destinations::list_destinations).post(destinations::create_destination),
         )
@@ -89,8 +104,13 @@ pub fn create_router(state: AppState) -> Router {
             "/v1/destinations/:id",
             get(destinations::get_destination)
                 .put(destinations::update_destination)
+                .patch(destinations::update_destination)
                 .delete(destinations::delete_destination),
         )
+        .route("/v1/destinations/:id/pause", post(destinations::pause_destination))
+        .route("/v1/destinations/:id/resume", post(destinations::resume_destination))
+        .route("/v1/destinations/:id/test", post(destinations::test_destination))
+        .route("/v1/destinations/:id/health", get(destinations::get_destination_health))
         .route(
             "/api/v1/destinations",
             get(destinations::list_destinations).post(destinations::create_destination),
@@ -99,8 +119,13 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/destinations/:id",
             get(destinations::get_destination)
                 .put(destinations::update_destination)
+                .patch(destinations::update_destination)
                 .delete(destinations::delete_destination),
         )
+        .route("/api/v1/destinations/:id/pause", post(destinations::pause_destination))
+        .route("/api/v1/destinations/:id/resume", post(destinations::resume_destination))
+        .route("/api/v1/destinations/:id/test", post(destinations::test_destination))
+        .route("/api/v1/destinations/:id/health", get(destinations::get_destination_health))
         // Subscriptions API
         .route(
             "/v1/subscriptions",

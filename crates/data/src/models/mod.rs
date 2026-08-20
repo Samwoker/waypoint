@@ -13,7 +13,7 @@ pub use api_key::ApiKey;
 pub use audit_log::AuditLog;
 pub use delivery::Delivery;
 pub use delivery_attempt::DeliveryAttempt;
-pub use destination::Destination;
+pub use destination::{Destination, DestinationHealthStats};
 pub use event::{Event, VerificationLogRecord};
 pub use source::Source;
 pub use subscription::Subscription;
