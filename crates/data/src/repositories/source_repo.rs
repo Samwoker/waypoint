@@ -292,4 +292,44 @@ impl<'a> SourceRepository<'a> {
 
         Ok(())
     }
+
+    pub async fn rotate_secret(
+        &self,
+        tenant_id: Uuid,
+        id: Uuid,
+        encrypted_secret: &str,
+    ) -> Result<Source, CoreError> {
+        let row = sqlx::query_as::<_, Source>(
+            r#"
+            UPDATE sources
+            SET
+                signing_secret_encrypted = $1,
+                updated_at = NOW()
+            WHERE tenant_id = $2 AND id = $3 AND status != 'deleted'
+            RETURNING
+                id,
+                tenant_id,
+                name,
+                slug,
+                description,
+                source_type AS provider,
+                COALESCE(metadata->>'verification_type', 'none') AS verification_type,
+                signing_secret_encrypted AS encrypted_secret,
+                (status = 'active') AS is_active,
+                (signing_secret_encrypted IS NOT NULL AND signing_secret_encrypted != '') AS has_secret,
+                (metadata->>'timestamp_tolerance_secs')::integer AS timestamp_tolerance_secs,
+                created_at,
+                updated_at
+            "#,
+        )
+        .bind(encrypted_secret)
+        .bind(tenant_id)
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error rotating source secret: {e}")))?
+        .ok_or_else(|| CoreError::NotFound(format!("Source '{id}' not found")))?;
+
+        Ok(row)
+    }
 }

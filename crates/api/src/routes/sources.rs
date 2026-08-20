@@ -109,9 +109,14 @@ pub async fn delete_source(
 
 pub async fn rotate_source_secret(
     tenant: AuthenticatedTenant,
-    State(_state): State<AppState>,
-    Path(_id): Path<Uuid>,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let _ = tenant;
-    Ok(StatusCode::NOT_IMPLEMENTED)
+    let result = state
+        .source_service
+        .rotate_source_secret(tenant.tenant_id, id)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(result)))
 }

@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use data::repositories::{SourceRepository, SubscriptionRepository};
+use data::repositories::{AuditLogRepository, SourceRepository, SubscriptionRepository};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use relay_core::crypto::{encrypt_secret, generate_secret_base64};
 use relay_core::error::CoreError;
-use crate::dto::{CreateSourceInput, SourceView, UpdateSourceInput};
+use crate::dto::{CreateSourceInput, RotateSecretResponse, SourceView, UpdateSourceInput};
 
 #[derive(Clone)]
 pub struct SourceService {
@@ -235,6 +235,46 @@ impl SourceService {
         }
 
         source_repo.delete(tenant_id, id).await
+    }
+
+    pub async fn rotate_source_secret(
+        &self,
+        tenant_id: Uuid,
+        id: Uuid,
+    ) -> Result<RotateSecretResponse, CoreError> {
+        let repo = SourceRepository::new(&self.pool);
+        let existing = repo
+            .find_by_tenant_and_id(tenant_id, id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Source '{id}' not found")))?;
+
+        let new_plaintext_secret = generate_secret_base64(32);
+        let encrypted_secret = encrypt_secret(new_plaintext_secret.as_bytes(), &self.encryption_key)?;
+
+        repo.rotate_secret(tenant_id, id, &encrypted_secret).await?;
+
+        // Create audit log entry
+        let audit_repo = AuditLogRepository::new(&self.pool);
+        let _ = audit_repo
+            .create(
+                tenant_id,
+                None,
+                "source.secret_rotated",
+                Some("source"),
+                Some(id),
+                serde_json::json!({
+                    "source_id": id,
+                    "source_slug": existing.slug,
+                    "source_name": existing.name,
+                }),
+            )
+            .await?;
+
+        Ok(RotateSecretResponse {
+            source_id: id,
+            secret: new_plaintext_secret,
+            warning: "Secret rotated successfully. Webhook provider must immediately be updated with this new secret to prevent webhook delivery failures.".to_string(),
+        })
     }
 }
 

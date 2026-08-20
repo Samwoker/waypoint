@@ -1415,3 +1415,164 @@ async fn test_delete_source_database_failure() {
         err => panic!("Expected CoreError::Internal, got {:?}", err),
     }
 }
+
+// 9. POST /sources/{source_id}/rotate-secret tests
+#[tokio::test]
+async fn test_rotate_source_secret_success_and_audit_log() {
+    let (app, state, pool) = setup_test_app().await;
+    let (tenant_id, raw_key) = create_test_tenant_and_key(&state, "rot-sec").await;
+
+    let source = state
+        .source_service
+        .create_source(
+            tenant_id,
+            CreateSourceInput {
+                name: "Rotate Source".to_string(),
+                slug: format!("rot-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "stripe".to_string(),
+                verification_type: "hmac_sha256".to_string(),
+                secret: Some("initial_secret_12345".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/rotate-secret", source.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(json_res["source_id"], source.id.to_string());
+    assert!(json_res["secret"].is_string());
+    let new_secret = json_res["secret"].as_str().unwrap();
+    assert_ne!(new_secret, "initial_secret_12345");
+    assert!(!new_secret.is_empty());
+    assert!(json_res["warning"].as_str().unwrap().contains("immediately"));
+
+    // Verify audit log entry was created
+    let audit_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM audit_logs
+        WHERE tenant_id = $1 AND action = 'source.secret_rotated' AND resource_id = $2
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(source.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(audit_count, 1);
+
+    // Verify plaintext secret is NOT returned on subsequent GET /sources/{id}
+    let req_get = Request::builder()
+        .uri(format!("/sources/{}", source.id))
+        .method("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res_get = app.oneshot(req_get).await.unwrap();
+    assert_eq!(res_get.status(), StatusCode::OK);
+    let json_get: Value = serde_json::from_slice(&axum::body::to_bytes(res_get.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(json_get.get("secret").is_none());
+    assert!(json_get.get("encrypted_secret").is_none());
+    assert!(json_get.get("signing_secret_encrypted").is_none());
+    assert_eq!(json_get["has_secret"], true);
+}
+
+#[tokio::test]
+async fn test_rotate_source_secret_nonexistent() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (_tenant_id, raw_key) = create_test_tenant_and_key(&state, "rot-none").await;
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/rotate-secret", Uuid::new_v4()))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_rotate_source_secret_cross_tenant() {
+    let (app, state, _pool) = setup_test_app().await;
+    let (tenant_a, _key_a) = create_test_tenant_and_key(&state, "rot-iso-a").await;
+    let (_tenant_b, key_b) = create_test_tenant_and_key(&state, "rot-iso-b").await;
+
+    let source_a = state
+        .source_service
+        .create_source(
+            tenant_a,
+            CreateSourceInput {
+                name: "Tenant A Source".to_string(),
+                slug: format!("ta-rot-{}", Uuid::new_v4().simple()),
+                description: None,
+                provider: "generic".to_string(),
+                verification_type: "none".to_string(),
+                secret: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/rotate-secret", source_a.id))
+        .method("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {key_b}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_rotate_source_secret_unauthorized() {
+    let (app, _state, _pool) = setup_test_app().await;
+
+    let req = Request::builder()
+        .uri(format!("/sources/{}/rotate-secret", Uuid::new_v4()))
+        .method("POST")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_rotate_source_secret_database_failure() {
+    let (_app, state, _pool) = setup_test_app().await;
+    let (tenant_id, _) = create_test_tenant_and_key(&state, "rot-db-err").await;
+
+    let invalid_pool = Arc::new(
+        sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(10))
+            .connect_lazy("postgres://invalid:invalid@localhost:9999/nonexistent")
+            .unwrap(),
+    );
+    let broken_source_service = domain::services::SourceService::new(invalid_pool, [0u8; 32]);
+
+    let res = broken_source_service.rotate_source_secret(tenant_id, Uuid::new_v4()).await;
+    assert!(res.is_err());
+    match res.unwrap_err() {
+        relay_core::error::CoreError::Internal(msg) => {
+            assert!(msg.contains("Database error") || msg.contains("connection"));
+        }
+        err => panic!("Expected CoreError::Internal, got {:?}", err),
+    }
+}

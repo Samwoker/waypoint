@@ -53,6 +53,13 @@ pub struct SourceView {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RotateSecretResponse {
+    pub source_id: Uuid,
+    pub secret: String,
+    pub warning: String,
+}
+
 // --- Destination DTOs ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
