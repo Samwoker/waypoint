@@ -103,3 +103,25 @@ impl FromRequestParts<AppState> for AuthenticatedTenant {
         Err(ApiError(CoreError::Unauthorized("Missing authentication credentials".to_string())))
     }
 }
+
+/// Extractor that enforces platform admin privileges
+#[derive(Debug, Clone)]
+pub struct RequireAdmin(pub AuthenticatedTenant);
+
+#[async_trait]
+impl FromRequestParts<AppState> for RequireAdmin {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = AuthenticatedTenant::from_request_parts(parts, state).await?;
+        if !auth.is_admin {
+            return Err(ApiError(CoreError::Forbidden(
+                "Platform admin privileges required".to_string(),
+            )));
+        }
+        Ok(RequireAdmin(auth))
+    }
+}

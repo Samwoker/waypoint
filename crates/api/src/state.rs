@@ -6,7 +6,7 @@ use relay_core::config::Config;
 use data::queue::RedisQueue;
 use domain::services::{
     AuditService, AuthService, DeliveryService, DestinationService, FanoutService, IngestionService,
-    SourceService, SubscriptionService, TenantService,
+    SourceService, SubscriptionService, TenantService, TransformationService,
 };
 
 #[derive(Clone)]
@@ -23,6 +23,7 @@ pub struct AppState {
     pub fanout_service: Arc<FanoutService>,
     pub delivery_service: Arc<DeliveryService>,
     pub audit_service: Arc<AuditService>,
+    pub transformation_service: Arc<TransformationService>,
 }
 
 impl AppState {
@@ -61,6 +62,7 @@ impl AppState {
         let fanout_service = Arc::new(FanoutService::new(pool.clone(), queue.clone()));
         let delivery_service = Arc::new(DeliveryService::new(pool.clone(), http_client));
         let audit_service = Arc::new(AuditService::new(pool.clone()));
+        let transformation_service = Arc::new(TransformationService::new(pool.clone()));
 
         Ok(Self {
             config,
@@ -75,6 +77,7 @@ impl AppState {
             fanout_service,
             delivery_service,
             audit_service,
+            transformation_service,
         })
     }
 }

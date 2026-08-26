@@ -62,20 +62,22 @@ pub async fn requeue_dlq_item(
 pub async fn discard_dlq_item(
     tenant: AuthenticatedTenant,
     State(state): State<AppState>,
-    Path(event_id): Path<Uuid>,
+    Path(id): Path<Uuid>,
     Query(query): Query<DlqActionQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let destination_id = query.destination_id.ok_or_else(|| {
-        ApiError(relay_core::error::CoreError::Validation(
-            "Query parameter 'destination_id' is required".to_string(),
-        ))
-    })?;
-
-    state
-        .delivery_service
-        .discard_dlq_item(tenant.tenant_id, event_id, destination_id)
-        .await
-        .map_err(ApiError)?;
+    if let Some(destination_id) = query.destination_id {
+        state
+            .delivery_service
+            .discard_dlq_item(tenant.tenant_id, id, destination_id)
+            .await
+            .map_err(ApiError)?;
+    } else {
+        state
+            .delivery_service
+            .discard_dlq_by_id(tenant.tenant_id, id)
+            .await
+            .map_err(ApiError)?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -97,16 +99,34 @@ pub async fn retry_dlq_item(
 }
 
 pub async fn purge_dlq_item(
-    _tenant: AuthenticatedTenant,
-    State(_state): State<AppState>,
-    Path(_id): Path<Uuid>,
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(StatusCode::NOT_IMPLEMENTED)
+    state
+        .delivery_service
+        .discard_dlq_by_id(tenant.tenant_id, id)
+        .await
+        .map_err(ApiError)?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn retry_all_dlq(
-    _tenant: AuthenticatedTenant,
-    State(_state): State<AppState>,
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(StatusCode::NOT_IMPLEMENTED)
+    let count = state
+        .delivery_service
+        .retry_all_dlq(tenant.tenant_id)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "requeued_count": count
+        })),
+    ))
 }

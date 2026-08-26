@@ -2,7 +2,6 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use serde_json::Value;
 use sqlx::PgPool;
 use tower::ServiceExt;
 
@@ -80,7 +79,7 @@ async fn test_metrics_endpoint_responds() {
     assert_eq!(res3.status(), StatusCode::OK);
 }
 
-// 2. Metrics are correctly exposed
+// 2. Metrics are correctly exposed in Prometheus text format
 #[tokio::test]
 async fn test_metrics_correctly_exposed() {
     let (app, _state, _pool) = setup_test_app().await;
@@ -94,15 +93,21 @@ async fn test_metrics_correctly_exposed() {
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    let json_res: Value = serde_json::from_slice(&body_bytes).unwrap();
+    // Must use Prometheus text content type
+    let content_type = res.headers().get("content-type").unwrap().to_str().unwrap();
+    assert!(content_type.contains("text/plain"), "Expected Prometheus text/plain content type");
 
-    assert!(json_res["events_received_total"].is_number());
-    assert!(json_res["deliveries_total"].is_number());
-    assert!(json_res["deliveries_succeeded_total"].is_number());
-    assert!(json_res["deliveries_failed_total"].is_number());
-    assert!(json_res["deliveries_pending_total"].is_number());
-    assert!(json_res["delivery_attempts_total"].is_number());
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body_str = std::str::from_utf8(&body_bytes).unwrap();
+
+    assert!(body_str.contains("relaycore_events_received_total"), "Missing events_received_total metric");
+    assert!(body_str.contains("relaycore_deliveries_total"), "Missing deliveries_total metric");
+    assert!(body_str.contains("relaycore_deliveries_succeeded_total"), "Missing deliveries_succeeded_total metric");
+    assert!(body_str.contains("relaycore_deliveries_failed_total"), "Missing deliveries_failed_total metric");
+    assert!(body_str.contains("relaycore_deliveries_pending_total"), "Missing deliveries_pending_total metric");
+    assert!(body_str.contains("relaycore_delivery_attempts_total"), "Missing delivery_attempts_total metric");
+    assert!(body_str.contains("relaycore_delivery_latency_p50_ms"), "Missing p50 latency metric");
+    assert!(body_str.contains("relaycore_delivery_latency_p95_ms"), "Missing p95 latency metric");
 }
 
 // 3. Sensitive data is not exposed

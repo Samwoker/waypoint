@@ -103,6 +103,36 @@ impl<'a> SourceRepository<'a> {
         Ok(row)
     }
 
+    pub async fn find_by_slug(&self, slug: &str) -> Result<Option<Source>, CoreError> {
+        let row = sqlx::query_as::<_, Source>(
+            r#"
+            SELECT
+                id,
+                tenant_id,
+                name,
+                slug,
+                description,
+                source_type AS provider,
+                COALESCE(metadata->>'verification_type', 'none') AS verification_type,
+                signing_secret_encrypted AS encrypted_secret,
+                (status = 'active') AS is_active,
+                (signing_secret_encrypted IS NOT NULL AND signing_secret_encrypted != '') AS has_secret,
+                (metadata->>'timestamp_tolerance_secs')::integer AS timestamp_tolerance_secs,
+                created_at,
+                updated_at
+            FROM sources
+            WHERE slug = $1 AND status = 'active'
+            LIMIT 1
+            "#,
+        )
+        .bind(slug)
+        .fetch_optional(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error fetching source by slug: {e}")))?;
+
+        Ok(row)
+    }
+
     pub async fn list_by_tenant(&self, tenant_id: Uuid, limit: i64, offset: i64) -> Result<Vec<Source>, CoreError> {
         let rows = sqlx::query_as::<_, Source>(
             r#"

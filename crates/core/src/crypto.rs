@@ -92,6 +92,34 @@ pub fn verify_hmac_sha256(
     }
 }
 
+/// Verifies an HMAC-SHA256 base64 signature using constant-time comparison.
+pub fn verify_hmac_sha256_base64(
+    secret: &[u8],
+    message: &[u8],
+    signature_base64: &str,
+) -> Result<bool, CoreError> {
+    let expected_sig = match BASE64.decode(signature_base64) {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
+
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(secret)
+        .map_err(|e| CoreError::Crypto(format!("Invalid HMAC key: {e}")))?;
+    mac.update(message);
+    let computed_sig = mac.finalize().into_bytes();
+
+    if expected_sig.len() != computed_sig.len() {
+        return Ok(false);
+    }
+
+    let is_valid = expected_sig.ct_eq(&computed_sig);
+    if is_valid.into() {
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 /// Generates a random cryptographic secret of specified byte length, hex-encoded.
 pub fn generate_secret(num_bytes: usize) -> String {
     let mut bytes = vec![0u8; num_bytes];
@@ -104,6 +132,35 @@ pub fn generate_secret_base64(num_bytes: usize) -> String {
     let mut bytes = vec![0u8; num_bytes];
     rand::thread_rng().fill_bytes(&mut bytes);
     BASE64.encode(bytes)
+}
+
+/// Hashes a plaintext password using Argon2id with a secure random salt.
+pub fn hash_password(password: &str) -> Result<String, CoreError> {
+    use argon2::{
+        password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
+        Argon2,
+    };
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let hash = argon2
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| CoreError::Crypto(format!("Failed to hash password: {e}")))?;
+    Ok(hash.to_string())
+}
+
+/// Verifies a plaintext password against an Argon2id password hash in constant time.
+pub fn verify_password(password: &str, password_hash: &str) -> Result<bool, CoreError> {
+    use argon2::{
+        password_hash::{PasswordHash, PasswordVerifier},
+        Argon2,
+    };
+    let parsed_hash = match PasswordHash::new(password_hash) {
+        Ok(h) => h,
+        Err(_) => return Ok(false),
+    };
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok())
 }
 
 #[cfg(test)]

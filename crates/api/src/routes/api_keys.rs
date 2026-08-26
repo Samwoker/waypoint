@@ -50,11 +50,17 @@ pub async fn create_api_key(
 }
 
 pub async fn get_api_key(
-    _tenant: AuthenticatedTenant,
-    State(_state): State<AppState>,
-    Path(_id): Path<Uuid>,
+    tenant: AuthenticatedTenant,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(StatusCode::NOT_IMPLEMENTED)
+    let key = state
+        .auth_service
+        .get_api_key(tenant.tenant_id, id)
+        .await
+        .map_err(ApiError)?;
+
+    Ok((StatusCode::OK, Json(key)))
 }
 
 pub async fn revoke_api_key(

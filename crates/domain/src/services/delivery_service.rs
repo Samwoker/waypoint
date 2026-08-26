@@ -460,6 +460,16 @@ impl DeliveryService {
         repo.discard_dlq(tenant_id, event_id, destination_id).await
     }
 
+    pub async fn discard_dlq_by_id(&self, tenant_id: Uuid, delivery_id: Uuid) -> Result<(), CoreError> {
+        let repo = DeliveryRepository::new(&self.pool);
+        repo.discard_dlq_by_id(tenant_id, delivery_id).await
+    }
+
+    pub async fn retry_all_dlq(&self, tenant_id: Uuid) -> Result<i64, CoreError> {
+        let repo = DeliveryRepository::new(&self.pool);
+        repo.retry_all_dlq(tenant_id).await
+    }
+
     pub async fn replay_dlq(&self, tenant_id: Uuid, delivery_id: Uuid) -> Result<(), CoreError> {
         self.retry_delivery(tenant_id, delivery_id).await?;
         Ok(())

@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+  }
+
+  body {
+    background-color: #09090b;
+    color: #f4f4f5;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  code, pre, kbd {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+
+/* Subtle background grid pattern */
+.bg-grid-pattern {
+  background-size: 32px 32px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+}
+
+/* Glowing Neon Syntax Highlighting Tokens (Prism Theme) */
+.prism-highlight .token.comment,
+.prism-highlight .token.prolog,
+.prism-highlight .token.doctype,
+.prism-highlight .token.cdata {
+  color: #71717a;
+  font-style: italic;
+}
+
+.prism-highlight .token.punctuation {
+  color: #94a3b8;
+}
+
+.prism-highlight .token.property,
+.prism-highlight .token.tag,
+.prism-highlight .token.constant,
+.prism-highlight .token.symbol,
+.prism-highlight .token.deleted {
+  color: #f43f5e;
+  font-weight: 500;
+}
+
+.prism-highlight .token.boolean,
+.prism-highlight .token.number {
+  color: #fb923c;
+  font-weight: 600;
+}
+
+.prism-highlight .token.selector,
+.prism-highlight .token.attr-name,
+.prism-highlight .token.string,
+.prism-highlight .token.char,
+.prism-highlight .token.builtin,
+.prism-highlight .token.inserted {
+  color: #34d399;
+}
+
+.prism-highlight .token.operator,
+.prism-highlight .token.entity,
+.prism-highlight .token.url,
+.prism-highlight .language-css .token.string,
+.prism-highlight .style .token.string {
+  color: #38bdf8;
+}
+
+.prism-highlight .token.atrule,
+.prism-highlight .token.attr-value,
+.prism-highlight .token.keyword {
+  color: #c084fc;
+  font-weight: 600;
+}
+
+.prism-highlight .token.function,
+.prism-highlight .token.class-name {
+  color: #60a5fa;
+  font-weight: 600;
+}
+
+.prism-highlight .token.regex,
+.prism-highlight .token.important,
+.prism-highlight .token.variable {
+  color: #facc15;
+}
+
+.prism-highlight .token.parameter {
+  color: #e879f9;
+}

@@ -656,4 +656,66 @@ impl<'a> DeliveryRepository<'a> {
 
         Ok(())
     }
+
+    pub async fn discard_dlq_by_id(
+        &self,
+        tenant_id: Uuid,
+        delivery_id: Uuid,
+    ) -> Result<(), CoreError> {
+        let existing = self
+            .find_by_tenant_and_id(tenant_id, delivery_id)
+            .await?
+            .ok_or_else(|| CoreError::NotFound(format!("Delivery '{delivery_id}' not found")))?;
+
+        if existing.status == "discarded" {
+            return Err(CoreError::Conflict("Delivery is already discarded".to_string()));
+        }
+
+        if existing.status != "dead_letter" && existing.status != "dead_lettered" {
+            return Err(CoreError::Validation(format!(
+                "Delivery is not in dead letter queue (current status: {})",
+                existing.status
+            )));
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE deliveries
+            SET
+                status = 'discarded',
+                updated_at = NOW()
+            WHERE tenant_id = $1 AND id = $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(delivery_id)
+        .execute(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error discarding DLQ delivery: {e}")))?;
+
+        Ok(())
+    }
+
+    pub async fn retry_all_dlq(
+        &self,
+        tenant_id: Uuid,
+    ) -> Result<i64, CoreError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE deliveries
+            SET
+                status = 'pending',
+                attempt_count = 0,
+                next_attempt_at = NOW(),
+                updated_at = NOW()
+            WHERE tenant_id = $1 AND status IN ('dead_letter', 'dead_lettered')
+            "#,
+        )
+        .bind(tenant_id)
+        .execute(self.pool)
+        .await
+        .map_err(|e| CoreError::Internal(format!("Database error retrying all DLQ items: {e}")))?;
+
+        Ok(result.rows_affected() as i64)
+    }
 }

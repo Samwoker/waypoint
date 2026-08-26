@@ -7,6 +7,7 @@ pub mod ingestion_service;
 pub mod source_service;
 pub mod subscription_service;
 pub mod tenant_service;
+pub mod transformation_service;
 
 pub use audit_service::AuditService;
 pub use auth_service::AuthService;
@@ -17,3 +18,4 @@ pub use ingestion_service::IngestionService;
 pub use source_service::SourceService;
 pub use subscription_service::SubscriptionService;
 pub use tenant_service::TenantService;
+pub use transformation_service::TransformationService;

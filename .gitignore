@@ -1,4 +1,8 @@
 /target
+node_modules/
+ui/node_modules/
+ui/dist/
+dist/
 **/*.rs.bk
 *.pdb
 .env

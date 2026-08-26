@@ -89,6 +89,11 @@ impl TenantService {
             .collect())
     }
 
+    pub async fn delete_tenant(&self, id: Uuid) -> Result<(), CoreError> {
+        let repo = TenantRepository::new(&self.pool);
+        repo.delete(id).await
+    }
+
     pub async fn get_tenant_usage(
         &self,
         caller_tenant_id: Uuid,

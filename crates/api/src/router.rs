@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post},
+    routing::{get, patch, post},
     Router,
 };
 use tower_http::trace::TraceLayer;
@@ -18,15 +18,21 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health/liveness", get(health::liveness))
         .route("/health/readiness", get(health::readiness))
         .route("/health", get(health::health_check))
+        .route("/healthz", get(health::healthz))
         .route("/v1/health", get(health::health_check))
         .route("/api/v1/health", get(health::health_check))
         .route("/metrics", get(health::metrics))
         .route("/v1/metrics", get(health::metrics))
         .route("/api/v1/metrics", get(health::metrics))
         // Auth API
+        .route("/api/v1/auth/register", post(auth::register))
+        .route("/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
+        .route("/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/refresh", post(auth::refresh_token))
+        .route("/v1/auth/refresh", post(auth::refresh_token))
         .route("/api/v1/auth/me", get(auth::me))
+        .route("/v1/auth/me", get(auth::me))
         // Tenants API
         .route("/tenants/:id/usage", get(tenants::get_tenant_usage))
         .route("/v1/tenants/:id/usage", get(tenants::get_tenant_usage))
@@ -220,10 +226,28 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/dlq/:id", get(dlq::get_dlq_item).delete(dlq::discard_dlq_item))
         .route("/api/v1/dlq/:id/retry", post(dlq::retry_dlq_item))
         // Transformations API
+        .route("/transformations", get(transformations::list_transformations).post(transformations::create_transformation))
+        .route("/transformations/:id", patch(transformations::update_transformation).delete(transformations::delete_transformation))
+        .route("/v1/transformations", get(transformations::list_transformations).post(transformations::create_transformation))
+        .route("/v1/transformations/:id", patch(transformations::update_transformation).delete(transformations::delete_transformation))
+        .route("/api/v1/transformations", get(transformations::list_transformations).post(transformations::create_transformation))
+        .route("/api/v1/transformations/:id", patch(transformations::update_transformation).delete(transformations::delete_transformation))
         .route("/api/v1/transformations/test", post(transformations::test_transformation))
         // Stats API
+        .route("/stats/overview", get(stats::get_stats_overview))
+        .route("/stats/sources/:id", get(stats::get_source_stats))
+        .route("/stats/destinations/:id", get(stats::get_destination_stats))
+        .route("/stats/timeseries", get(stats::get_stats_timeseries))
+        .route("/v1/stats/overview", get(stats::get_stats_overview))
+        .route("/v1/stats/sources/:id", get(stats::get_source_stats))
+        .route("/v1/stats/destinations/:id", get(stats::get_destination_stats))
+        .route("/v1/stats/timeseries", get(stats::get_stats_timeseries))
         .route("/api/v1/stats", get(stats::get_tenant_stats))
+        .route("/api/v1/stats/overview", get(stats::get_stats_overview))
         .route("/api/v1/stats/system", get(stats::get_system_stats))
+        .route("/api/v1/stats/sources/:id", get(stats::get_source_stats))
+        .route("/api/v1/stats/destinations/:id", get(stats::get_destination_stats))
+        .route("/api/v1/stats/timeseries", get(stats::get_stats_timeseries))
         // Middleware layers
         .layer(TraceLayer::new_for_http())
         .with_state(state)

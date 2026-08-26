@@ -236,10 +236,34 @@ pub struct LoginInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterInput {
+    pub email: String,
+    pub password: String,
+    pub tenant_name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RefreshTokenInput {
+    pub refresh_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthTokenView {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserView {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub email: String,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 // --- Event & Delivery DTOs ---
@@ -508,4 +532,33 @@ pub struct TenantUsageView {
     pub total_events: i64,
     pub total_delivery_attempts: i64,
     pub daily_events: Vec<DailyEventCount>,
+}
+
+// --- Transformation DTOs ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformationRule {
+    pub source_path: String,
+    pub dest_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTransformationInput {
+    pub subscription_id: Uuid,
+    pub rules: Vec<TransformationRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateTransformationInput {
+    pub rules: Vec<TransformationRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformationView {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub subscription_id: Uuid,
+    pub rules: Vec<TransformationRule>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
