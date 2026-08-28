@@ -84,6 +84,14 @@ function AppLayout() {
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute>
+                  <OverviewPage onOpenSendModal={() => setIsSendModalOpen(true)} />
+                </ProtectedRoute>
+              }
+            />
 
             {/* INGESTION */}
             <Route
@@ -208,6 +216,14 @@ function AppLayout() {
             <Route path="/docs/:section" element={<DocsPage />} />
 
             {/* ADMIN */}
+            <Route
+              path="/tenants"
+              element={
+                <ProtectedRoute>
+                  <TenantSettingsPage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/tenants/settings"
               element={
