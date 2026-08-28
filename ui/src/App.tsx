@@ -5,6 +5,8 @@ import { CommandPalette } from './components/layout/CommandPalette';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { ToastProvider } from './context/ToastContext';
+import { DocsLandingPage } from './docs/pages/DocsLandingPage';
+import { DocDetailPage } from './docs/pages/DocDetailPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { AuthPage } from './pages/AuthPage';
 import { DeliveriesPage } from './pages/DeliveriesPage';
@@ -12,7 +14,6 @@ import { DeliveryDetailPage } from './pages/DeliveryDetailPage';
 import { DestinationDetailPage } from './pages/DestinationDetailPage';
 import { DestinationsPage } from './pages/DestinationsPage';
 import { DlqPage } from './pages/DlqPage';
-import { DocsPage } from './pages/DocsPage';
 import { EventDetailPage } from './pages/EventDetailPage';
 import { EventsPage } from './pages/EventsPage';
 import { OverviewPage } from './pages/OverviewPage';
@@ -55,7 +56,9 @@ function AppLayout() {
   }, [dispatch]);
 
   const isAuthRoute = location.pathname === '/login' || location.pathname === '/register';
+  const isDocsRoute = location.pathname.startsWith('/docs');
 
+  // Unauthenticated Auth Portal
   if (isAuthRoute) {
     return (
       <Routes>
@@ -65,6 +68,17 @@ function AppLayout() {
     );
   }
 
+  // Public Developer Documentation Portal
+  if (isDocsRoute) {
+    return (
+      <Routes>
+        <Route path="/docs" element={<DocsLandingPage />} />
+        <Route path="/docs/*" element={<DocDetailPage />} />
+      </Routes>
+    );
+  }
+
+  // Authenticated Tenant Dashboard
   return (
     <div className="flex min-h-screen bg-[#09090b] text-zinc-100 font-sans antialiased">
       {/* Sidebar navigation */}
@@ -212,8 +226,6 @@ function AppLayout() {
                 </ProtectedRoute>
               }
             />
-            <Route path="/docs" element={<DocsPage />} />
-            <Route path="/docs/:section" element={<DocsPage />} />
 
             {/* ADMIN */}
             <Route
