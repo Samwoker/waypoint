@@ -34,9 +34,10 @@ const destinationsSlice = createSlice({
       _action: PayloadAction<{
         name: string;
         url: string;
+        description?: string;
         timeout_ms?: number;
-        max_retry_count?: number;
-        rate_limit?: number;
+        max_retries?: number;
+        rate_limit_rps?: number;
       }>
     ) => {
       state.isLoading = true;

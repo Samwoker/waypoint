@@ -17,7 +17,7 @@ function* handleFetchOverview(action?: PayloadAction<{ period?: string } | undef
     const [overviewStats, systemStats, timeseries]: [OverviewStats, SystemStats, TimeseriesPoint[]] = yield all([
       call([api, api.getOverviewStats], period),
       call([api, api.getSystemStats]),
-      call([api, api.getTimeseries], 'volume', period),
+      call([api, api.getTimeseriesStats], period),
     ]);
 
     yield put(fetchOverviewSuccess({ overviewStats, systemStats, timeseries }));

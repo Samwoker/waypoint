@@ -6,10 +6,17 @@ export interface Tenant {
   updated_at: string;
 }
 
+export interface DailyEventCount {
+  date: string;
+  count: number;
+}
+
 export interface TenantUsage {
+  tenant_id: string;
+  period: string;
   total_events: number;
   total_delivery_attempts: number;
-  daily_events: [string, number][];
+  daily_events: DailyEventCount[];
 }
 
 export interface Source {
@@ -23,8 +30,15 @@ export interface Source {
   is_active: boolean;
   has_secret: boolean;
   timestamp_tolerance_secs?: number;
+  secret?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface RotateSecretResponse {
+  source_id: string;
+  secret: string;
+  warning: string;
 }
 
 export interface VerificationLog {
@@ -39,17 +53,33 @@ export interface Destination {
   name: string;
   url: string;
   description?: string;
-  rate_limit?: number;
+  rate_limit_rps?: number;
   timeout_ms: number;
-  max_retry_count: number;
-  initial_backoff_sec: number;
+  max_retries: number;
+  retry_backoff_strategy?: string;
   is_active: boolean;
-  has_secret: boolean;
+  status: string; // 'active' | 'paused' | 'circuit_open' | 'deleted'
   consecutive_failures: number;
-  circuit_status: 'closed' | 'open' | 'half_open';
   circuit_opened_at?: string;
+  secret?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface DestinationHealth {
+  status: string;
+  consecutive_failures: number;
+  circuit_opened_at?: string;
+  success_rate: number;
+  total_attempts: number;
+  successful_attempts: number;
+}
+
+export interface TestDestinationResponse {
+  success: boolean;
+  http_status?: number;
+  latency_ms: number;
+  error?: string;
 }
 
 export interface Subscription {
@@ -60,8 +90,8 @@ export interface Subscription {
   source_name?: string;
   destination_name?: string;
   event_types: string[];
-  filter_expression?: string;
-  retry_policy?: Record<string, any>;
+  filter_rules?: any;
+  transformation_template?: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -72,10 +102,53 @@ export interface EventItem {
   tenant_id: string;
   source_id?: string;
   event_type: string;
-  payload: any;
-  headers?: Record<string, any>;
   idempotency_key?: string;
+  status: string;
+  received_at: string;
   created_at: string;
+}
+
+export interface DeliverySummary {
+  total: number;
+  delivered: number;
+  failed: number;
+  pending: number;
+}
+
+export interface EventDetail {
+  id: string;
+  tenant_id: string;
+  source_id: string;
+  event_type: string;
+  idempotency_key?: string;
+  status: string;
+  delivery_summary: DeliverySummary;
+  received_at: string;
+  created_at: string;
+}
+
+export interface EventDeliveryItem {
+  id: string;
+  destination_id: string;
+  destination_name: string;
+  status: string;
+  attempt_count: number;
+  next_attempt_at?: string;
+  delivered_at?: string;
+  created_at: string;
+}
+
+export interface RawEventPayload {
+  event_id: string;
+  headers: Record<string, any>;
+  payload: string;
+  is_binary: boolean;
+}
+
+export interface PaginatedEvents {
+  events: EventItem[];
+  next_cursor?: string;
+  has_more: boolean;
 }
 
 export interface Delivery {
@@ -87,28 +160,43 @@ export interface Delivery {
   destination_name?: string;
   destination_url?: string;
   event_type?: string;
-  status: 'pending' | 'delivered' | 'failed' | 'dead_letter' | 'discarded';
+  status: 'pending' | 'delivered' | 'failed' | 'dead_letter' | 'discarded' | string;
   attempt_count: number;
   max_attempts: number;
   next_retry_at?: string;
-  last_error?: string;
   created_at: string;
   updated_at: string;
 }
 
 export interface DeliveryAttempt {
   id: string;
-  delivery_id: string;
   attempt_number: number;
-  status: 'success' | 'failed';
-  response_status?: number;
-  request_headers?: Record<string, any>;
-  request_body?: string;
-  response_headers?: Record<string, any>;
-  response_body?: string;
+  http_status?: number;
+  response_body_snippet?: string;
+  latency_ms?: number;
   error_message?: string;
-  duration_ms?: number;
   created_at: string;
+}
+
+export interface DeliveryDetail {
+  id: string;
+  tenant_id: string;
+  event_id: string;
+  subscription_id: string;
+  destination_id: string;
+  status: string;
+  attempt_count: number;
+  max_attempts: number;
+  next_retry_at?: string;
+  attempts: DeliveryAttempt[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginatedDeliveries {
+  deliveries: Delivery[];
+  next_cursor?: string;
+  has_more: boolean;
 }
 
 export interface DlqRecord {
@@ -125,6 +213,12 @@ export interface DlqRecord {
   last_error?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface PaginatedDlq {
+  items: DlqRecord[];
+  next_cursor?: string;
+  has_more: boolean;
 }
 
 export interface TransformationRule {
@@ -170,9 +264,9 @@ export interface TimeseriesPoint {
 
 export interface ApiKey {
   id: string;
+  tenant_id: string;
   name: string;
   key_prefix: string;
-  is_active: boolean;
   expires_at?: string;
   last_used_at?: string;
   created_at: string;
@@ -181,7 +275,7 @@ export interface ApiKey {
 export interface ApiKeyCreated {
   id: string;
   name: string;
-  key: string;
+  raw_key: string;
   key_prefix: string;
   expires_at?: string;
   created_at: string;
@@ -193,6 +287,6 @@ export interface User {
   email: string;
   role: string;
   is_admin: boolean;
-  status: string;
+  status?: string;
   created_at: string;
 }

@@ -1,240 +1,259 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
+  Activity,
+  Search,
+  Filter,
+  ArrowRight,
+  RotateCcw,
   CheckCircle2,
-  RefreshCw,
-  RotateCw,
-  X,
+  XCircle,
+  Clock,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
 } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
-  clearSelectedDelivery,
   fetchDeliveriesRequest,
   replayDeliveryRequest,
-  selectDeliveryRequest,
-  setStatusFilter,
 } from '../store/slices/deliveriesSlice';
+import { api } from '../api/client';
+import { Delivery } from '../types';
+import { useToast } from '../context/ToastContext';
+import { EmptyState, TableSkeleton } from '../components/common/Skeleton';
 
 export const DeliveriesPage: React.FC = () => {
+  const navigate = useNavigate();
   const dispatch = useAppDispatch();
-  const {
-    deliveries,
-    selectedDelivery,
-    attempts,
-    statusFilter,
-    isLoading,
-    isReplaying,
-    replaySuccess,
-  } = useAppSelector((state) => state.deliveries);
+  const toast = useToast();
+  const { deliveries, isLoading } = useAppSelector(
+    (state) => state.deliveries
+  );
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
+
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [cursorHistory, setCursorHistory] = useState<string[]>([]);
+  const [currentCursorIndex, setCurrentCursorIndex] = useState<number>(0);
 
   useEffect(() => {
-    dispatch(fetchDeliveriesRequest());
+    dispatch(
+      fetchDeliveriesRequest({
+        status: statusFilter === 'all' ? undefined : statusFilter,
+      })
+    );
   }, [dispatch, statusFilter]);
 
+  const handleNextPage = () => {
+    if (nextCursor) {
+      setCursorHistory((prev) => [...prev, nextCursor]);
+      setCurrentCursorIndex((prev) => prev + 1);
+      dispatch(
+        fetchDeliveriesRequest({
+          status: statusFilter === 'all' ? undefined : statusFilter,
+        })
+      );
+    }
+  };
+
+  const handlePrevPage = () => {
+    if (currentCursorIndex > 0) {
+      const prevIdx = currentCursorIndex - 1;
+      setCurrentCursorIndex(prevIdx);
+      dispatch(
+        fetchDeliveriesRequest({
+          status: statusFilter === 'all' ? undefined : statusFilter,
+        })
+      );
+    }
+  };
+
+  const handleReplay = async (e: React.MouseEvent, del: Delivery) => {
+    e.stopPropagation();
+    try {
+      await api.replayDelivery(del.id);
+      toast.success('Delivery Queued for Replay', 'Worker pipeline re-enqueued delivery task.');
+      dispatch(
+        fetchDeliveriesRequest({
+          status: statusFilter === 'all' ? undefined : statusFilter,
+        })
+      );
+    } catch (err: any) {
+      toast.error('Replay failed', err.message);
+    }
+  };
+
+  const filteredDeliveries = deliveries.filter(
+    (d) =>
+      d.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (d.destination_name || '').toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-150">
-      {/* Top Header */}
-      <div className="flex items-center justify-between">
+    <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-150">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight">Delivery Attempts & Trace Logs</h1>
-          <p className="text-xs text-zinc-400">Inspect fan-out delivery statuses, HTTP latencies, and replay failed attempts.</p>
+          <h1 className="text-2xl font-extrabold text-white tracking-tight">
+            Deliveries & Operational Traces
+          </h1>
+          <p className="text-xs text-zinc-400 mt-1">
+            Real-time outbound dispatch attempts, latency monitoring, retry execution timelines, and replays.
+          </p>
         </div>
 
-        <div className="flex items-center space-x-2">
-          {/* Status Filter */}
-          <div className="flex items-center space-x-1 bg-zinc-950 p-1 rounded-lg border border-zinc-800 text-xs">
-            {['all', 'delivered', 'pending', 'failed', 'dead_letter'].map((s) => (
-              <button
-                key={s}
-                onClick={() => dispatch(setStatusFilter(s))}
-                className={`px-3 py-1 font-mono rounded-md transition-colors capitalize ${
-                  statusFilter === s
-                    ? 'bg-zinc-800 text-white font-semibold shadow-sm'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {s.replace('_', ' ')}
-              </button>
-            ))}
-          </div>
-
-          <button
-            onClick={() => dispatch(fetchDeliveriesRequest())}
-            className="p-2 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-          </button>
+        {/* Status Filter Buttons */}
+        <div className="flex bg-zinc-950 p-1 rounded-xl border border-zinc-800 self-start sm:self-auto overflow-x-auto">
+          {['all', 'delivered', 'failed', 'pending', 'dead_letter'].map((st) => (
+            <button
+              key={st}
+              onClick={() => {
+                setStatusFilter(st);
+                setCurrentCursorIndex(0);
+                setCursorHistory([]);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold capitalize transition-all shrink-0 ${
+                statusFilter === st
+                  ? 'bg-zinc-800 text-white shadow-sm border border-zinc-700/60'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {st.replace('_', ' ')}
+            </button>
+          ))}
         </div>
+      </div>
+
+      {/* Search & Filter Bar */}
+      <div className="flex items-center space-x-3 bg-zinc-950 p-2 rounded-2xl border border-zinc-800">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
+          <input
+            type="text"
+            placeholder="Search deliveries by ID or destination name..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-transparent pl-10 pr-4 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none font-mono"
+          />
+        </div>
+        <span className="text-xs font-mono text-zinc-500 px-3">
+          {filteredDeliveries.length} deliveries
+        </span>
       </div>
 
       {/* Deliveries Table */}
-      <div className="rounded-2xl border border-zinc-800 bg-[#121215] overflow-hidden shadow-xl">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs font-mono">
-            <thead className="bg-zinc-900/80 border-b border-zinc-800 text-zinc-400">
-              <tr>
-                <th className="px-5 py-3 font-semibold">Delivery ID</th>
-                <th className="px-5 py-3 font-semibold">Event Type</th>
-                <th className="px-5 py-3 font-semibold">Status</th>
-                <th className="px-5 py-3 font-semibold">Attempts</th>
-                <th className="px-5 py-3 font-semibold">Timestamp</th>
-                <th className="px-5 py-3 font-semibold text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800/60 text-zinc-300">
-              {deliveries.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-5 py-10 text-center text-zinc-500 font-sans">
-                    No deliveries found matching current filter.
-                  </td>
-                </tr>
-              ) : (
-                deliveries.map((del) => (
-                  <tr
-                    key={del.id}
-                    onClick={() => dispatch(selectDeliveryRequest(del))}
-                    className={`cursor-pointer transition-colors ${
-                      selectedDelivery?.id === del.id ? 'bg-zinc-800/60' : 'hover:bg-zinc-900/50'
-                    }`}
-                  >
-                    <td className="px-5 py-3.5 text-zinc-200 font-medium truncate max-w-[140px]">
-                      {del.id}
-                    </td>
-                    <td className="px-5 py-3.5 text-white font-semibold">
-                      {del.event_type || 'webhook.event'}
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${
-                          del.status === 'delivered'
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                            : del.status === 'pending'
-                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                            : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                        }`}
-                      >
-                        {del.status.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3.5 text-zinc-400">
-                      {del.attempt_count} / {del.max_attempts}
-                    </td>
-                    <td className="px-5 py-3.5 text-zinc-500">
-                      {new Date(del.created_at).toLocaleString()}
-                    </td>
-                    <td className="px-5 py-3.5 text-right">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          dispatch(replayDeliveryRequest(del.id));
-                        }}
-                        className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors text-[11px] font-sans"
-                      >
-                        Replay
-                      </button>
-                    </td>
+      <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-4">
+        {isLoading ? (
+          <TableSkeleton rows={6} cols={6} />
+        ) : filteredDeliveries.length === 0 ? (
+          <EmptyState
+            icon={Activity}
+            title="No deliveries found"
+            description="No webhook deliveries match the current status filter."
+          />
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-zinc-800 text-zinc-500 font-mono text-[10px] uppercase">
+                    <th className="py-3 px-3">Delivery ID</th>
+                    <th className="py-3 px-3">Target Destination</th>
+                    <th className="py-3 px-3">Status</th>
+                    <th className="py-3 px-3">Attempts Used</th>
+                    <th className="py-3 px-3">Last Dispatched</th>
+                    <th className="py-3 px-3 text-right">Quick Replay</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/60 font-mono">
+                  {filteredDeliveries.map((del) => {
+                    const isDelivered = del.status === 'delivered';
+                    const isFailed = del.status === 'failed' || del.status === 'dead_letter';
 
-      {/* Detail Attempt Trace Drawer */}
-      {selectedDelivery && (
-        <div className="p-6 rounded-2xl border border-zinc-800 bg-[#121215] space-y-5 animate-in slide-in-from-bottom-2 duration-150">
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
-            <div>
-              <div className="flex items-center space-x-2.5">
-                <span className="text-sm font-bold text-white font-mono">Trace: {selectedDelivery.id}</span>
-                <span className="text-xs font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
-                  Event: {selectedDelivery.event_id}
-                </span>
-              </div>
-              <p className="text-xs text-zinc-400 mt-1 font-mono">
-                Destination: {selectedDelivery.destination_id}
-              </p>
-            </div>
-
-            <div className="flex items-center space-x-3">
-              {replaySuccess && (
-                <span className="text-xs text-emerald-400 font-medium flex items-center space-x-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Replay Dispatched!</span>
-                </span>
-              )}
-              <button
-                onClick={() => dispatch(replayDeliveryRequest(selectedDelivery.id))}
-                disabled={isReplaying}
-                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-white text-zinc-950 font-semibold text-xs hover:bg-zinc-200 transition-colors"
-              >
-                <RotateCw className={`w-3.5 h-3.5 ${isReplaying ? 'animate-spin' : ''}`} />
-                <span>{isReplaying ? 'Replaying...' : 'Replay Delivery'}</span>
-              </button>
-              <button
-                onClick={() => dispatch(clearSelectedDelivery())}
-                className="p-1 text-zinc-500 hover:text-zinc-300 rounded"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Attempt List */}
-          <div className="space-y-3">
-            <h3 className="text-xs font-mono font-semibold text-zinc-400 uppercase">
-              Attempt Execution History ({attempts.length})
-            </h3>
-
-            {attempts.length === 0 ? (
-              <div className="p-6 text-center text-xs text-zinc-500 bg-zinc-950 rounded-xl border border-zinc-800">
-                No attempt records yet or delivery is pending in worker queue.
-              </div>
-            ) : (
-              attempts.map((att) => (
-                <div
-                  key={att.id}
-                  className="p-4 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-3"
-                >
-                  <div className="flex items-center justify-between text-xs font-mono">
-                    <div className="flex items-center space-x-2">
-                      <span className="font-semibold text-white">Attempt #{att.attempt_number}</span>
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] ${
-                          att.status === 'success'
-                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                            : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                        }`}
+                    return (
+                      <tr
+                        key={del.id}
+                        onClick={() => navigate(`/deliveries/${del.id}`)}
+                        className="hover:bg-zinc-900/40 cursor-pointer transition-colors group"
                       >
-                        HTTP {att.response_status || 'ERR'}
-                      </span>
-                    </div>
-                    <div className="text-zinc-500 flex items-center space-x-3">
-                      <span>{att.duration_ms ? `${att.duration_ms} ms` : ''}</span>
-                      <span>{new Date(att.created_at).toLocaleString()}</span>
-                    </div>
-                  </div>
+                        <td className="py-3.5 px-3 font-bold text-white group-hover:text-emerald-400 transition-colors">
+                          {del.id.slice(0, 14)}...
+                        </td>
 
-                  {att.error_message && (
-                    <div className="p-2.5 rounded-lg bg-rose-950/30 border border-rose-900/40 text-xs text-rose-300 font-mono">
-                      Error: {att.error_message}
-                    </div>
-                  )}
+                        <td className="py-3.5 px-3 font-sans font-semibold text-zinc-200">
+                          {del.destination_name || del.destination_id.slice(0, 12)}
+                        </td>
 
-                  {att.response_body && (
-                    <div>
-                      <div className="text-[11px] font-mono text-zinc-500 mb-1">Response Body:</div>
-                      <pre className="p-2.5 rounded-lg bg-[#09090b] border border-zinc-800 text-[11px] font-mono text-zinc-300 overflow-x-auto">
-                        <code>{att.response_body}</code>
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
+                        <td className="py-3.5 px-3">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize ${
+                              isDelivered
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : isFailed
+                                ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                            }`}
+                          >
+                            {del.status.replace('_', ' ')}
+                          </span>
+                        </td>
+
+                        <td className="py-3.5 px-3 text-zinc-400">
+                          {del.attempt_count} / {del.max_attempts}
+                        </td>
+
+                        <td className="py-3.5 px-3 text-zinc-400">
+                          {new Date(del.created_at).toLocaleTimeString()}
+                        </td>
+
+                        <td className="py-3.5 px-3 text-right">
+                          <button
+                            onClick={(e) => handleReplay(e, del)}
+                            className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs font-semibold inline-flex items-center space-x-1 transition-colors font-sans"
+                          >
+                            <RotateCcw className="w-3 h-3 text-zinc-400" />
+                            <span>Replay</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Keyset Cursor Pagination */}
+            <div className="flex items-center justify-between pt-4 border-t border-zinc-800/80 text-xs font-mono">
+              <span className="text-zinc-500">
+                Page {currentCursorIndex + 1}
+              </span>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={handlePrevPage}
+                  disabled={currentCursorIndex === 0}
+                  className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 disabled:opacity-40 flex items-center space-x-1"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Previous</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNextPage}
+                  disabled={!hasMore}
+                  className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 disabled:opacity-40 flex items-center space-x-1"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 };

@@ -1,30 +1,34 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  Activity,
+  AlertCircle,
   AlertTriangle,
-  ArrowUpRight,
+  ArrowRight,
+  BarChart3,
+  CheckCircle2,
   Clock,
-  Cpu,
+  Layers,
   Radio,
   RefreshCw,
   Send,
   ShieldCheck,
-  TrendingUp,
   Zap,
 } from 'lucide-react';
 import {
-  Area,
   AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
+  Area,
   XAxis,
   YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
 } from 'recharts';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
-import { fetchDestinationsRequest } from '../store/slices/destinationsSlice';
-import { fetchEventsRequest } from '../store/slices/eventsSlice';
-import { fetchOverviewRequest, setPeriod } from '../store/slices/overviewSlice';
+import { fetchOverviewRequest } from '../store/slices/overviewSlice';
+import { api } from '../api/client';
+import { Destination, DlqRecord, EventItem } from '../types';
+import { Skeleton } from '../components/common/Skeleton';
 
 interface OverviewPageProps {
   onOpenSendModal: () => void;
@@ -33,195 +37,80 @@ interface OverviewPageProps {
 export const OverviewPage: React.FC<OverviewPageProps> = ({ onOpenSendModal }) => {
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
-  const { overviewStats, systemStats, timeseries, period, isLoading } = useAppSelector(
+  const { overviewStats: stats, timeseries, isLoading } = useAppSelector(
     (state) => state.overview
   );
-  const { events } = useAppSelector((state) => state.events);
-  const { destinations } = useAppSelector((state) => state.destinations);
 
-  const refreshAll = () => {
-    dispatch(fetchOverviewRequest({ period }));
-    dispatch(fetchEventsRequest());
-    dispatch(fetchDestinationsRequest());
-  };
+  const [period, setPeriod] = useState<'1h' | '24h' | '7d' | '30d'>('24h');
+  const [unhealthyDestinations, setUnhealthyDestinations] = useState<Destination[]>([]);
+  const [dlqItems, setDlqItems] = useState<DlqRecord[]>([]);
+  const [recentEvents, setRecentEvents] = useState<EventItem[]>([]);
 
   useEffect(() => {
-    refreshAll();
-    const interval = setInterval(refreshAll, 8000);
-    return () => clearInterval(interval);
-  }, [period]);
+    dispatch(fetchOverviewRequest({ period }));
 
-  const totalEvents = overviewStats?.total_events ?? systemStats?.total_events ?? 0;
-  const successRate = overviewStats?.success_rate ?? 100.0;
-  const p50Latency = overviewStats?.p50_latency_ms ?? 34;
-  const dlqCount = systemStats?.dead_letter_deliveries ?? 0;
+    // Fetch destination health, DLQ, and recent events
+    Promise.all([
+      api.listDestinations(),
+      api.listDlq(5),
+      api.listEvents(5),
+    ]).then(([dests, dlq, evtsRes]) => {
+      setUnhealthyDestinations(
+        dests.filter((d) => d.status === 'circuit_open' || d.consecutive_failures > 0)
+      );
+      setDlqItems(dlq.items || []);
+      setRecentEvents(evtsRes.events || []);
+    });
+  }, [dispatch, period]);
 
-  const chartData = timeseries.length > 0
-    ? timeseries.map((pt) => ({
-        time: new Date(pt.bucket).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        events: pt.value,
-      }))
-    : [
-        { time: '00:00', events: 12 },
-        { time: '04:00', events: 25 },
-        { time: '08:00', events: 88 },
-        { time: '12:00', events: 145 },
-        { time: '16:00', events: 210 },
-        { time: '20:00', events: 160 },
-        { time: 'Now', events: 195 },
-      ];
+  if (isLoading && !stats) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto space-y-6">
+        <Skeleton className="h-8 w-48" />
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-28 rounded-2xl" />
+          ))}
+        </div>
+        <Skeleton className="h-72 w-full rounded-2xl" />
+      </div>
+    );
+  }
+
+  const successRate = stats?.success_rate
+    ? `${(stats.success_rate * 100).toFixed(1)}%`
+    : '100.0%';
+
+  const hasOperationalIssues = unhealthyDestinations.length > 0 || dlqItems.length > 0;
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-200">
-      {/* Top Banner & Quick Action Cards */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold text-white tracking-tight">System Telemetry & Controls</h1>
-            <p className="text-xs text-zinc-400">Live webhook ingestion, verification and resilient delivery.</p>
+    <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-150">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center space-x-2.5">
+            <h1 className="text-2xl font-extrabold text-white tracking-tight">
+              Operational Gateway Dashboard
+            </h1>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              Live
+            </span>
           </div>
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={refreshAll}
-              className="flex items-center space-x-1 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 hover:text-white hover:bg-zinc-800 transition-all"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
-            </button>
-          </div>
+          <p className="text-xs text-zinc-400 mt-1">
+            Real-time webhook ingestion health, worker dispatch success rates, and delivery latencies.
+          </p>
         </div>
 
-        {/* Quick Action Tiles */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div
-            onClick={() => navigate('/sources')}
-            className="p-5 rounded-2xl bg-gradient-to-b from-zinc-900/90 to-zinc-950/80 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer group transition-all"
-          >
-            <div className="w-9 h-9 rounded-xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-              <Radio className="w-5 h-5 text-emerald-400" />
-            </div>
-            <h3 className="text-sm font-semibold text-white group-hover:text-emerald-400 transition-colors flex items-center justify-between">
-              <span>Create Inbound Source</span>
-              <ArrowUpRight className="w-4 h-4 text-zinc-500 group-hover:text-emerald-400" />
-            </h3>
-            <p className="text-xs text-zinc-400 mt-1">
-              Configure Stripe, GitHub, Shopify or generic HMAC webhooks with signature checks.
-            </p>
-          </div>
-
-          <div
-            onClick={() => navigate('/destinations')}
-            className="p-5 rounded-2xl bg-gradient-to-b from-zinc-900/90 to-zinc-950/80 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer group transition-all"
-          >
-            <div className="w-9 h-9 rounded-xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-              <Cpu className="w-5 h-5 text-blue-400" />
-            </div>
-            <h3 className="text-sm font-semibold text-white group-hover:text-blue-400 transition-colors flex items-center justify-between">
-              <span>Connect Destination</span>
-              <ArrowUpRight className="w-4 h-4 text-zinc-500 group-hover:text-blue-400" />
-            </h3>
-            <p className="text-xs text-zinc-400 mt-1">
-              Add downstream HTTP endpoints, rate limiters, backoff and circuit breaker thresholds.
-            </p>
-          </div>
-
-          <div
-            onClick={onOpenSendModal}
-            className="p-5 rounded-2xl bg-gradient-to-b from-zinc-900/90 to-zinc-950/80 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer group transition-all"
-          >
-            <div className="w-9 h-9 rounded-xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-              <Send className="w-5 h-5 text-violet-400" />
-            </div>
-            <h3 className="text-sm font-semibold text-white group-hover:text-violet-400 transition-colors flex items-center justify-between">
-              <span>Dispatch Test Webhook</span>
-              <ArrowUpRight className="w-4 h-4 text-zinc-500 group-hover:text-violet-400" />
-            </h3>
-            <p className="text-xs text-zinc-400 mt-1">
-              Send live JSON payloads to `/hooks/:slug` to test verification & routing immediately.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {/* Total Ingestion */}
-        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800">
-          <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
-            <span>TOTAL EVENTS</span>
-            <Zap className="w-4 h-4 text-zinc-500" />
-          </div>
-          <div className="mt-3 text-2xl font-bold font-mono text-white tracking-tight">
-            {totalEvents.toLocaleString()}
-          </div>
-          <div className="mt-1 flex items-center space-x-1.5 text-xs text-emerald-400 font-mono">
-            <TrendingUp className="w-3.5 h-3.5" />
-            <span>Redux-Saga Synced</span>
-          </div>
-        </div>
-
-        {/* Success Rate */}
-        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800">
-          <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
-            <span>DELIVERY SUCCESS</span>
-            <ShieldCheck className="w-4 h-4 text-zinc-500" />
-          </div>
-          <div className="mt-3 text-2xl font-bold font-mono text-emerald-400 tracking-tight">
-            {successRate.toFixed(1)}%
-          </div>
-          <div className="mt-1 text-xs text-zinc-500 font-mono">
-            Across active subscriptions
-          </div>
-        </div>
-
-        {/* P50 Latency */}
-        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800">
-          <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
-            <span>P50 LATENCY</span>
-            <Clock className="w-4 h-4 text-zinc-500" />
-          </div>
-          <div className="mt-3 text-2xl font-bold font-mono text-white tracking-tight">
-            {p50Latency ? `${p50Latency.toFixed(0)} ms` : '< 40 ms'}
-          </div>
-          <div className="mt-1 text-xs text-zinc-500 font-mono">
-            End-to-end relay duration
-          </div>
-        </div>
-
-        {/* DLQ Count */}
-        <div
-          onClick={() => navigate('/dlq')}
-          className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 hover:border-zinc-700 cursor-pointer transition-colors group"
-        >
-          <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
-            <span>DEAD LETTER QUEUE</span>
-            <AlertTriangle className={`w-4 h-4 ${dlqCount > 0 ? 'text-amber-400' : 'text-zinc-500'}`} />
-          </div>
-          <div className={`mt-3 text-2xl font-bold font-mono tracking-tight ${dlqCount > 0 ? 'text-amber-400' : 'text-zinc-200'}`}>
-            {dlqCount}
-          </div>
-          <div className="mt-1 text-xs text-zinc-400 font-mono flex items-center space-x-1 group-hover:text-white transition-colors">
-            <span>Quarantined items</span>
-            <ArrowUpRight className="w-3 h-3" />
-          </div>
-        </div>
-      </div>
-
-      {/* Chart Section */}
-      <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-white">Event Ingestion Throughput</h2>
-            <p className="text-xs text-zinc-400">Real-time webhook traffic ingested through API gateway.</p>
-          </div>
-          <div className="flex items-center space-x-1 bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+        <div className="flex items-center space-x-3 self-start sm:self-auto">
+          {/* Period selector */}
+          <div className="flex bg-zinc-950 p-1 rounded-xl border border-zinc-800">
             {(['1h', '24h', '7d', '30d'] as const).map((p) => (
               <button
                 key={p}
-                onClick={() => dispatch(setPeriod(p))}
-                className={`px-3 py-1 text-xs font-mono rounded-md transition-colors ${
+                onClick={() => setPeriod(p)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold transition-all ${
                   period === p
-                    ? 'bg-zinc-800 text-white font-semibold shadow-sm'
+                    ? 'bg-zinc-800 text-white shadow-sm border border-zinc-700/60'
                     : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
@@ -229,136 +118,216 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onOpenSendModal }) =
               </button>
             ))}
           </div>
+
+          <button
+            onClick={onOpenSendModal}
+            className="px-4 py-2 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 font-semibold text-xs transition-all shadow-md flex items-center space-x-2 active:scale-95"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>Send Test Webhook</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Prominent Operational Issue Alert (Section 5: Surface Failures Prominently) */}
+      {hasOperationalIssues && (
+        <div className="p-5 rounded-2xl bg-amber-950/30 border border-amber-800/40 text-amber-200 space-y-3 animate-in fade-in">
+          <div className="flex items-center space-x-2.5 font-bold text-sm text-amber-300">
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+            <span>Operational Attention Needed</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            {unhealthyDestinations.length > 0 && (
+              <div
+                onClick={() => navigate('/destinations')}
+                className="p-3 rounded-xl bg-zinc-950/80 border border-amber-800/30 cursor-pointer hover:bg-zinc-900 transition-colors flex items-center justify-between"
+              >
+                <div>
+                  <span className="font-semibold text-white">
+                    {unhealthyDestinations.length} Unhealthy Destinations
+                  </span>
+                  <p className="text-[11px] text-zinc-400">
+                    Tripped circuit breakers or consecutive delivery timeouts detected.
+                  </p>
+                </div>
+                <ArrowRight className="w-4 h-4 text-amber-400" />
+              </div>
+            )}
+
+            {dlqItems.length > 0 && (
+              <div
+                onClick={() => navigate('/dlq')}
+                className="p-3 rounded-xl bg-zinc-950/80 border border-amber-800/30 cursor-pointer hover:bg-zinc-900 transition-colors flex items-center justify-between"
+              >
+                <div>
+                  <span className="font-semibold text-white">
+                    {dlqItems.length} Dead-Lettered Deliveries
+                  </span>
+                  <p className="text-[11px] text-zinc-400">
+                    Exhausted retry policies awaiting recovery or requeue.
+                  </p>
+                </div>
+                <ArrowRight className="w-4 h-4 text-amber-400" />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Top Level KPI Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 space-y-1">
+          <div className="flex items-center justify-between text-zinc-400 text-xs">
+            <span className="font-mono text-[10px] uppercase">Ingested Events</span>
+            <Layers className="w-4 h-4 text-purple-400" />
+          </div>
+          <div className="text-2xl font-black text-white font-mono pt-1">
+            {stats?.total_events.toLocaleString() || '0'}
+          </div>
+          <div className="text-[10px] font-mono text-zinc-500">Inbound Webhooks</div>
         </div>
 
-        <div className="h-64 w-full">
+        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 space-y-1">
+          <div className="flex items-center justify-between text-zinc-400 text-xs">
+            <span className="font-mono text-[10px] uppercase">Success Rate</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          </div>
+          <div className="text-2xl font-black text-emerald-400 font-mono pt-1">{successRate}</div>
+          <div className="text-[10px] font-mono text-zinc-500">Forwarded Successfully</div>
+        </div>
+
+        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 space-y-1">
+          <div className="flex items-center justify-between text-zinc-400 text-xs">
+            <span className="font-mono text-[10px] uppercase">p50 / p95 Latency</span>
+            <Clock className="w-4 h-4 text-blue-400" />
+          </div>
+          <div className="text-2xl font-black text-white font-mono pt-1">
+            {stats?.p50_latency_ms || 42}ms <span className="text-sm font-normal text-zinc-500">/ {stats?.p95_latency_ms || 128}ms</span>
+          </div>
+          <div className="text-[10px] font-mono text-zinc-500">Dispatch Latency</div>
+        </div>
+
+        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 space-y-1">
+          <div className="flex items-center justify-between text-zinc-400 text-xs">
+            <span className="font-mono text-[10px] uppercase">Total Deliveries</span>
+            <Send className="w-4 h-4 text-emerald-400" />
+          </div>
+          <div className="text-2xl font-black text-white font-mono pt-1">
+            {stats?.total_deliveries.toLocaleString() || '0'}
+          </div>
+          <div className="text-[10px] font-mono text-zinc-500">Outbound Forwardings</div>
+        </div>
+      </div>
+
+      {/* Throughput Area Chart */}
+      <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <h3 className="text-sm font-bold text-white tracking-tight">
+              Ingestion & Relay Volume
+            </h3>
+            <p className="text-xs text-zinc-400">
+              Live webhook traffic over the selected {period} window.
+            </p>
+          </div>
+        </div>
+
+        <div className="h-64 w-full pt-4">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+            <AreaChart data={timeseries}>
               <defs>
-                <linearGradient id="eventGrad" x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id="colorThroughput" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                  <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" opacity={0.6} />
-              <XAxis dataKey="time" stroke="#71717a" fontSize={11} tickLine={false} />
-              <YAxis stroke="#71717a" fontSize={11} tickLine={false} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#18181b', borderColor: '#27272a', borderRadius: '8px', fontSize: '12px' }}
-                itemStyle={{ color: '#10b981' }}
+              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+              <XAxis
+                dataKey="bucket"
+                stroke="#71717a"
+                fontSize={10}
+                tickFormatter={(val) => val.split(' ')[1] || val}
               />
-              <Area type="monotone" dataKey="events" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#eventGrad)" />
+              <YAxis stroke="#71717a" fontSize={10} />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#09090b',
+                  borderColor: '#27272a',
+                  borderRadius: '0.75rem',
+                  fontSize: '0.75rem',
+                  color: '#fff',
+                }}
+              />
+              <Area
+                type="monotone"
+                dataKey="value"
+                name="Events Ingested"
+                stroke="#10b981"
+                strokeWidth={2}
+                fillOpacity={1}
+                fill="url(#colorThroughput)"
+              />
             </AreaChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* Split Section: Recent Events + Active Destinations */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Events */}
-        <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-white flex items-center space-x-2">
-              <span>Recent Webhook Events</span>
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            </h2>
-            <button
-              onClick={() => navigate('/events')}
-              className="text-xs text-zinc-400 hover:text-white font-mono flex items-center space-x-1"
-            >
-              <span>View all</span>
-              <ArrowUpRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            {events.length === 0 ? (
-              <div className="p-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
-                No events received yet. Click "Dispatch Test Webhook" to send your first event!
-              </div>
-            ) : (
-              events.slice(0, 5).map((evt) => (
-                <div
-                  key={evt.id}
-                  onClick={() => navigate('/events')}
-                  className="p-3 rounded-xl bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors flex items-center justify-between"
-                >
-                  <div className="flex items-center space-x-3">
-                    <div className="p-2 rounded-lg bg-zinc-800 text-emerald-400">
-                      <Zap className="w-3.5 h-3.5" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-mono font-medium text-zinc-200">{evt.event_type}</div>
-                      <div className="text-[10px] font-mono text-zinc-500 truncate max-w-[200px]">{evt.id}</div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
-                      Ingested
-                    </span>
-                    <div className="text-[10px] font-mono text-zinc-500 mt-0.5">
-                      {new Date(evt.created_at).toLocaleTimeString()}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+      {/* Recent Ingested Events */}
+      <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold text-white tracking-tight">Recent Ingested Events</h3>
+          <button
+            onClick={() => navigate('/events')}
+            className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center space-x-1"
+          >
+            <span>View all events</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
         </div>
 
-        {/* Active Destinations */}
-        <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-white">Destination Endpoints & Circuit Health</h2>
-            <button
-              onClick={() => navigate('/destinations')}
-              className="text-xs text-zinc-400 hover:text-white font-mono flex items-center space-x-1"
-            >
-              <span>Manage</span>
-              <ArrowUpRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            {destinations.length === 0 ? (
-              <div className="p-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
-                No destination endpoints registered. Click "Connect Destination" to add one!
-              </div>
-            ) : (
-              destinations.slice(0, 4).map((dest) => (
-                <div
-                  key={dest.id}
-                  className="p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/80 flex items-center justify-between"
-                >
-                  <div className="flex items-center space-x-3">
-                    <div className="p-2 rounded-lg bg-zinc-800 text-blue-400">
-                      <Cpu className="w-3.5 h-3.5" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-semibold text-zinc-200">{dest.name}</div>
-                      <div className="text-[11px] font-mono text-zinc-500 truncate max-w-[240px]">{dest.url}</div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span
-                      className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-medium ${
-                        dest.circuit_status === 'closed'
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                          : dest.circuit_status === 'half_open'
-                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                          : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                      }`}
-                    >
-                      {dest.circuit_status.toUpperCase()}
-                    </span>
-                    <div className="text-[10px] font-mono text-zinc-500 mt-0.5">
-                      Max {dest.max_retry_count} retries
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-zinc-800 text-zinc-500 font-mono text-[10px] uppercase">
+                <th className="py-2.5 px-3">Event Type</th>
+                <th className="py-2.5 px-3">Event ID</th>
+                <th className="py-2.5 px-3">Status</th>
+                <th className="py-2.5 px-3">Received At</th>
+                <th className="py-2.5 px-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-800/60 font-mono">
+              {recentEvents.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-6 text-center text-zinc-500 italic">
+                    No webhook events recorded in this window.
+                  </td>
+                </tr>
+              ) : (
+                recentEvents.slice(0, 5).map((evt) => (
+                  <tr
+                    key={evt.id}
+                    onClick={() => navigate(`/events/${evt.id}`)}
+                    className="hover:bg-zinc-900/40 cursor-pointer transition-colors"
+                  >
+                    <td className="py-2.5 px-3 font-bold text-white">{evt.event_type}</td>
+                    <td className="py-2.5 px-3 text-zinc-400">{evt.id.slice(0, 16)}...</td>
+                    <td className="py-2.5 px-3">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold uppercase">
+                        {evt.status || 'Ingested'}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 text-zinc-400">
+                      {new Date(evt.received_at || evt.created_at).toLocaleTimeString()}
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-zinc-500 hover:text-white">
+                      Inspect &rarr;
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

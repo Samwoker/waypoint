@@ -3,30 +3,37 @@ import {
   ApiKeyCreated,
   Delivery,
   DeliveryAttempt,
+  DeliveryDetail,
   Destination,
+  DestinationHealth,
   DlqRecord,
+  EventDetail,
+  EventDeliveryItem,
   EventItem,
   OverviewStats,
+  PaginatedDeliveries,
+  PaginatedDlq,
+  PaginatedEvents,
+  RawEventPayload,
+  RotateSecretResponse,
   Source,
   Subscription,
   SystemStats,
   Tenant,
   TenantUsage,
+  TestDestinationResponse,
   TimeseriesPoint,
   Transformation,
   User,
   VerificationLog,
 } from '../types';
 
-const API_BASE = ''; // Proxied through Vite to http://localhost:3001
-
-class ApiService {
-  private token: string | null = null;
-  private apiKey: string | null = null;
+class ApiClient {
+  private baseUrl: string = '';
+  private token: string | null = localStorage.getItem('waypoint_token');
 
   constructor() {
     this.token = localStorage.getItem('waypoint_token');
-    this.apiKey = localStorage.getItem('waypoint_api_key');
   }
 
   setToken(token: string | null) {
@@ -38,89 +45,90 @@ class ApiService {
     }
   }
 
-  setApiKey(key: string | null) {
-    this.apiKey = key;
-    if (key) {
-      localStorage.setItem('waypoint_api_key', key);
-    } else {
-      localStorage.removeItem('waypoint_api_key');
-    }
+  getToken(): string | null {
+    return this.token || localStorage.getItem('waypoint_token');
   }
 
-  getToken() {
-    return this.token;
-  }
-
-  private async request<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
+  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>),
     };
 
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
-    } else if (this.apiKey) {
-      headers['X-Api-Key'] = this.apiKey;
+    const currentToken = this.getToken();
+    if (currentToken && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${currentToken}`;
     }
 
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
       ...options,
       headers,
     });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        // Clear invalid token
+        this.setToken(null);
+      }
+      let errMsg = `HTTP Error ${response.status}: ${response.statusText}`;
+      try {
+        const errorData = await response.json();
+        errMsg = errorData.message || errorData.error || errMsg;
+      } catch (_) {
+        // ignore parse error
+      }
+      throw new Error(errMsg);
+    }
 
     if (response.status === 204) {
       return {} as T;
     }
 
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error?.message || data.message || `Request failed with status ${response.status}`);
-    }
-
-    return data as T;
+    return response.json();
   }
 
   // --- Auth & User ---
-  async register(email: string, password: string, tenantName: string): Promise<{ access_token: string; refresh_token: string }> {
-    const res = await this.request<{ access_token: string; refresh_token: string }>('/api/v1/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ email, password, tenant_name: tenantName }),
-    });
+  async register(
+    email: string,
+    pass: string,
+    tenantName: string
+  ): Promise<{ access_token: string; refresh_token: string }> {
+    const res = await this.request<{ access_token: string; refresh_token: string }>(
+      '/api/v1/auth/register',
+      {
+        method: 'POST',
+        body: JSON.stringify({ email, password: pass, tenant_name: tenantName }),
+      }
+    );
     this.setToken(res.access_token);
     return res;
   }
 
-  async login(email: string, password: string): Promise<{ access_token: string; refresh_token: string }> {
-    const res = await this.request<{ access_token: string; refresh_token: string }>('/api/v1/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
+  async login(
+    email: string,
+    pass: string
+  ): Promise<{ access_token: string; refresh_token: string }> {
+    const res = await this.request<{ access_token: string; refresh_token: string }>(
+      '/api/v1/auth/login',
+      {
+        method: 'POST',
+        body: JSON.stringify({ email, password: pass }),
+      }
+    );
     this.setToken(res.access_token);
     return res;
   }
 
   async getMe(): Promise<User> {
-    return this.request<User>('/api/v1/auth/me');
-  }
-
-  // --- Tenants ---
-  async listTenants(): Promise<Tenant[]> {
-    return this.request<Tenant[]>('/api/v1/tenants');
-  }
-
-  async createTenant(name: string, slug: string): Promise<Tenant> {
-    return this.request<Tenant>('/api/v1/tenants', {
-      method: 'POST',
-      body: JSON.stringify({ name, slug }),
-    });
-  }
-
-  async getTenantUsage(tenantId: string, period?: string): Promise<TenantUsage> {
-    const query = period ? `?period=${period}` : '';
-    return this.request<TenantUsage>(`/api/v1/tenants/${tenantId}/usage${query}`);
+    const res = await this.request<any>('/api/v1/auth/me');
+    return {
+      id: res.tenant_id || res.id,
+      tenant_id: res.tenant_id,
+      email: res.tenant?.name ? `${res.tenant.slug}@waypoint.internal` : 'admin@waypoint.internal',
+      role: res.is_admin ? 'admin' : 'member',
+      is_admin: !!res.is_admin,
+      created_at: res.tenant?.created_at || new Date().toISOString(),
+    };
   }
 
   // --- Sources ---
@@ -128,24 +136,28 @@ class ApiService {
     return this.request<Source[]>('/api/v1/sources');
   }
 
-  async createSource(input: {
+  async getSource(id: string): Promise<Source> {
+    return this.request<Source>(`/api/v1/sources/${id}`);
+  }
+
+  async createSource(data: {
     name: string;
     slug: string;
     description?: string;
-    provider: string;
-    verification_type: string;
+    provider?: string;
+    verification_type?: string;
     secret?: string;
   }): Promise<Source> {
     return this.request<Source>('/api/v1/sources', {
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify(data),
     });
   }
 
-  async updateSource(id: string, input: Partial<Source>): Promise<Source> {
+  async updateSource(id: string, data: Partial<Source>): Promise<Source> {
     return this.request<Source>(`/api/v1/sources/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify(input),
+      body: JSON.stringify(data),
     });
   }
 
@@ -153,13 +165,13 @@ class ApiService {
     return this.request<void>(`/api/v1/sources/${id}`, { method: 'DELETE' });
   }
 
-  async rotateSourceSecret(id: string): Promise<{ secret: string }> {
-    return this.request<{ secret: string }>(`/api/v1/sources/${id}/rotate-secret`, {
+  async rotateSourceSecret(id: string): Promise<RotateSecretResponse> {
+    return this.request<RotateSecretResponse>(`/api/v1/sources/${id}/rotate-secret`, {
       method: 'POST',
     });
   }
 
-  async getSourceVerificationLog(id: string, limit = 20): Promise<VerificationLog[]> {
+  async getSourceVerificationLog(id: string, limit: number = 20): Promise<VerificationLog[]> {
     return this.request<VerificationLog[]>(`/api/v1/sources/${id}/verification-log?limit=${limit}`);
   }
 
@@ -168,25 +180,28 @@ class ApiService {
     return this.request<Destination[]>('/api/v1/destinations');
   }
 
-  async createDestination(input: {
+  async getDestination(id: string): Promise<Destination> {
+    return this.request<Destination>(`/api/v1/destinations/${id}`);
+  }
+
+  async createDestination(data: {
     name: string;
     url: string;
     description?: string;
-    rate_limit?: number;
     timeout_ms?: number;
-    max_retry_count?: number;
-    secret?: string;
+    max_retries?: number;
+    rate_limit_rps?: number;
   }): Promise<Destination> {
     return this.request<Destination>('/api/v1/destinations', {
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify(data),
     });
   }
 
-  async updateDestination(id: string, input: Partial<Destination>): Promise<Destination> {
+  async updateDestination(id: string, data: Partial<Destination>): Promise<Destination> {
     return this.request<Destination>(`/api/v1/destinations/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify(input),
+      body: JSON.stringify(data),
     });
   }
 
@@ -194,8 +209,26 @@ class ApiService {
     return this.request<void>(`/api/v1/destinations/${id}`, { method: 'DELETE' });
   }
 
-  async resetCircuit(id: string): Promise<void> {
-    return this.request<void>(`/api/v1/destinations/${id}/circuit/reset`, { method: 'POST' });
+  async pauseDestination(id: string): Promise<Destination> {
+    return this.request<Destination>(`/api/v1/destinations/${id}/pause`, { method: 'POST' });
+  }
+
+  async resumeDestination(id: string): Promise<Destination> {
+    return this.request<Destination>(`/api/v1/destinations/${id}/resume`, { method: 'POST' });
+  }
+
+  async testDestination(id: string): Promise<TestDestinationResponse> {
+    return this.request<TestDestinationResponse>(`/api/v1/destinations/${id}/test`, {
+      method: 'POST',
+    });
+  }
+
+  async getDestinationHealth(id: string): Promise<DestinationHealth> {
+    return this.request<DestinationHealth>(`/api/v1/destinations/${id}/health`);
+  }
+
+  async getDestinationStats(id: string): Promise<any> {
+    return this.request<any>(`/api/v1/stats/destinations/${id}`);
   }
 
   // --- Subscriptions ---
@@ -203,22 +236,27 @@ class ApiService {
     return this.request<Subscription[]>('/api/v1/subscriptions');
   }
 
-  async createSubscription(input: {
+  async getSubscription(id: string): Promise<Subscription> {
+    return this.request<Subscription>(`/api/v1/subscriptions/${id}`);
+  }
+
+  async createSubscription(data: {
     source_id: string;
     destination_id: string;
     event_types: string[];
-    filter_expression?: string;
+    filter_rules?: any;
+    transformation_template?: string;
   }): Promise<Subscription> {
     return this.request<Subscription>('/api/v1/subscriptions', {
       method: 'POST',
-      body: JSON.stringify(input),
+      body: JSON.stringify(data),
     });
   }
 
-  async updateSubscription(id: string, input: Partial<Subscription>): Promise<Subscription> {
+  async updateSubscription(id: string, data: Partial<Subscription>): Promise<Subscription> {
     return this.request<Subscription>(`/api/v1/subscriptions/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify(input),
+      body: JSON.stringify(data),
     });
   }
 
@@ -226,38 +264,63 @@ class ApiService {
     return this.request<void>(`/api/v1/subscriptions/${id}`, { method: 'DELETE' });
   }
 
+  async pauseSubscription(id: string): Promise<Subscription> {
+    return this.request<Subscription>(`/api/v1/subscriptions/${id}/pause`, { method: 'POST' });
+  }
+
+  async resumeSubscription(id: string): Promise<Subscription> {
+    return this.request<Subscription>(`/api/v1/subscriptions/${id}/resume`, { method: 'POST' });
+  }
+
   // --- Events ---
-  async listEvents(limit = 50): Promise<EventItem[]> {
-    return this.request<EventItem[]>(`/api/v1/events?limit=${limit}`);
+  async listEvents(limit: number = 20, cursor?: string): Promise<PaginatedEvents> {
+    const params = new URLSearchParams({ limit: limit.toString() });
+    if (cursor) params.append('cursor', cursor);
+    return this.request<PaginatedEvents>(`/api/v1/events?${params.toString()}`);
   }
 
-  async getEvent(id: string): Promise<EventItem> {
-    return this.request<EventItem>(`/api/v1/events/${id}`);
+  async getEvent(id: string): Promise<EventDetail> {
+    return this.request<EventDetail>(`/api/v1/events/${id}`);
   }
 
-  async sendWebhook(slug: string, payload: any, headers?: Record<string, string>): Promise<any> {
+  async getEventRaw(id: string): Promise<RawEventPayload> {
+    return this.request<RawEventPayload>(`/api/v1/events/${id}/raw`);
+  }
+
+  async getEventDeliveries(id: string): Promise<EventDeliveryItem[]> {
+    return this.request<EventDeliveryItem[]>(`/api/v1/events/${id}/deliveries`);
+  }
+
+  async replayEvent(id: string): Promise<{ event_id: string; deliveries_created: number }> {
+    return this.request<{ event_id: string; deliveries_created: number }>(
+      `/api/v1/events/${id}/replay`,
+      { method: 'POST' }
+    );
+  }
+
+  async sendTestWebhook(slug: string, payload: any, eventType: string): Promise<any> {
     return this.request<any>(`/hooks/${slug}`, {
       method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
+      headers: {
+        'X-Event-Type': eventType,
+      },
+      body: typeof payload === 'string' ? payload : JSON.stringify(payload),
     });
   }
 
-  // --- Deliveries & DLQ ---
-  async listDeliveries(params?: { status?: string; destination_id?: string; limit?: number }): Promise<Delivery[]> {
-    const searchParams = new URLSearchParams();
-    if (params?.status) searchParams.set('status', params.status);
-    if (params?.destination_id) searchParams.set('destination_id', params.destination_id);
-    if (params?.limit) searchParams.set('limit', params.limit.toString());
-    const q = searchParams.toString() ? `?${searchParams.toString()}` : '';
-    return this.request<Delivery[]>(`/api/v1/deliveries${q}`);
+  // --- Deliveries ---
+  async listDeliveries(status?: string, limit: number = 20, cursor?: string): Promise<PaginatedDeliveries> {
+    const params = new URLSearchParams({ limit: limit.toString() });
+    if (status) params.append('status', status);
+    if (cursor) params.append('cursor', cursor);
+    return this.request<PaginatedDeliveries>(`/api/v1/deliveries?${params.toString()}`);
   }
 
-  async getDelivery(id: string): Promise<Delivery> {
-    return this.request<Delivery>(`/api/v1/deliveries/${id}`);
+  async getDelivery(id: string): Promise<DeliveryDetail> {
+    return this.request<DeliveryDetail>(`/api/v1/deliveries/${id}`);
   }
 
-  async listDeliveryAttempts(id: string): Promise<DeliveryAttempt[]> {
+  async getDeliveryAttempts(id: string): Promise<DeliveryAttempt[]> {
     return this.request<DeliveryAttempt[]>(`/api/v1/deliveries/${id}/attempts`);
   }
 
@@ -265,44 +328,35 @@ class ApiService {
     return this.request<void>(`/api/v1/deliveries/${id}/replay`, { method: 'POST' });
   }
 
-  async listDlq(limit = 50): Promise<{ items: DlqRecord[]; has_more: boolean }> {
-    return this.request<{ items: DlqRecord[]; has_more: boolean }>(`/api/v1/dlq?limit=${limit}`);
+  // --- Dead Letter Queue (DLQ) ---
+  async listDlq(limit: number = 20, cursor?: string): Promise<PaginatedDlq> {
+    const params = new URLSearchParams({ limit: limit.toString() });
+    if (cursor) params.append('cursor', cursor);
+    return this.request<PaginatedDlq>(`/api/v1/dlq?${params.toString()}`);
   }
 
-  async retryAllDlq(): Promise<{ success: boolean; requeued_count: number }> {
-    return this.request<{ success: boolean; requeued_count: number }>('/api/v1/dlq/retry-all', {
-      method: 'POST',
-    });
+  async requeueDlqItem(id: string): Promise<void> {
+    return this.request<void>(`/api/v1/dlq/${id}/requeue`, { method: 'POST' });
   }
 
-  async discardDlq(id: string): Promise<void> {
+  async discardDlqItem(id: string): Promise<void> {
     return this.request<void>(`/api/v1/dlq/${id}`, { method: 'DELETE' });
   }
 
-  // --- Transformations ---
-  async listTransformations(subscriptionId?: string): Promise<Transformation[]> {
-    const q = subscriptionId ? `?subscription_id=${subscriptionId}` : '';
-    return this.request<Transformation[]>(`/api/v1/transformations${q}`);
+  async retryAllDlq(): Promise<{ replayed_count: number }> {
+    return this.request<{ replayed_count: number }>('/api/v1/dlq/retry-all', { method: 'POST' });
   }
 
-  async testTransformation(template: string, payload: any): Promise<{ transformed_payload: any }> {
-    return this.request<{ transformed_payload: any }>('/api/v1/transformations/test', {
+  // --- Transformations ---
+  async listTransformations(): Promise<Transformation[]> {
+    return this.request<Transformation[]>('/api/v1/transformations');
+  }
+
+  async testTransformation(template: string, payload: any): Promise<any> {
+    return this.request<any>('/api/v1/transformations/test', {
       method: 'POST',
       body: JSON.stringify({ template, payload }),
     });
-  }
-
-  // --- Stats ---
-  async getOverviewStats(period = '24h'): Promise<OverviewStats> {
-    return this.request<OverviewStats>(`/api/v1/stats/overview?period=${period}`);
-  }
-
-  async getTimeseries(metric = 'volume', period = '24h'): Promise<TimeseriesPoint[]> {
-    return this.request<TimeseriesPoint[]>(`/api/v1/stats/timeseries?metric=${metric}&period=${period}`);
-  }
-
-  async getSystemStats(): Promise<SystemStats> {
-    return this.request<SystemStats>('/api/v1/stats/system');
   }
 
   // --- API Keys ---
@@ -310,16 +364,46 @@ class ApiService {
     return this.request<ApiKey[]>('/api/v1/api-keys');
   }
 
-  async createApiKey(name: string, expiresInDays?: number): Promise<ApiKeyCreated> {
+  async createApiKey(name: string, expiresAt?: string): Promise<ApiKeyCreated> {
     return this.request<ApiKeyCreated>('/api/v1/api-keys', {
       method: 'POST',
-      body: JSON.stringify({ name, expires_in_days: expiresInDays }),
+      body: JSON.stringify({ name, expires_at: expiresAt }),
     });
   }
 
   async revokeApiKey(id: string): Promise<void> {
     return this.request<void>(`/api/v1/api-keys/${id}`, { method: 'DELETE' });
   }
+
+  // --- Statistics & Observability ---
+  async getOverviewStats(period: string = '24h'): Promise<OverviewStats> {
+    return this.request<OverviewStats>(`/api/v1/stats/overview?period=${period}`);
+  }
+
+  async getTimeseriesStats(period: string = '24h'): Promise<TimeseriesPoint[]> {
+    return this.request<TimeseriesPoint[]>(`/api/v1/stats/timeseries?period=${period}`);
+  }
+
+  setApiKey(key: string | null) {
+    if (key) {
+      localStorage.setItem('waypoint_api_key', key);
+    } else {
+      localStorage.removeItem('waypoint_api_key');
+    }
+  }
+
+  async getSystemStats(): Promise<SystemStats> {
+    return this.request<SystemStats>('/api/v1/stats/system');
+  }
+
+  // --- Tenants & Usage ---
+  async listTenants(): Promise<Tenant[]> {
+    return this.request<Tenant[]>('/api/v1/tenants');
+  }
+
+  async getTenantUsage(tenantId: string, period: string = '30d'): Promise<TenantUsage> {
+    return this.request<TenantUsage>(`/api/v1/tenants/${tenantId}/usage?period=${period}`);
+  }
 }
 
-export const api = new ApiService();
+export const api = new ApiClient();

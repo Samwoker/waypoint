@@ -40,6 +40,7 @@ const sourcesSlice = createSlice({
       _action: PayloadAction<{
         name: string;
         slug: string;
+        description?: string;
         provider: string;
         verification_type: string;
         secret?: string;

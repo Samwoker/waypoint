@@ -1,38 +1,48 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  Check,
-  CheckCircle2,
-  Copy,
-  Plus,
   Radio,
-  RotateCw,
-  X,
-  XCircle,
+  Plus,
+  Copy,
+  Check,
+  ShieldCheck,
+  RefreshCw,
+  Trash2,
+  ExternalLink,
+  Search,
+  Filter,
+  Shield,
+  Layers,
+  ArrowRight,
 } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import {
-  clearSelectedSource,
-  createSourceRequest,
   fetchSourcesRequest,
-  fetchVerificationLogsRequest,
-  rotateSecretRequest,
+  createSourceRequest,
 } from '../store/slices/sourcesSlice';
 import { Source } from '../types';
+import { useToast } from '../context/ToastContext';
+import { SecretRevealModal } from '../components/common/SecretRevealModal';
+import { ConfirmModal } from '../components/common/ConfirmModal';
+import { EmptyState, TableSkeleton } from '../components/common/Skeleton';
 
 export const SourcesPage: React.FC = () => {
+  const navigate = useNavigate();
   const dispatch = useAppDispatch();
-  const { sources, selectedSource, verificationLogs, generatedSecret, isLoading } = useAppSelector(
-    (state) => state.sources
-  );
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
+  const toast = useToast();
+  const { sources, isLoading } = useAppSelector((state) => state.sources);
 
-  // Form states
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [createdSecret, setCreatedSecret] = useState<{ name: string; secret: string } | null>(null);
+  const [deleteSourceId, setDeleteSourceId] = useState<string | null>(null);
+
+  // Form State
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
-  const [provider, setProvider] = useState('stripe');
-  const [verificationType, setVerificationType] = useState('hmac_sha256');
-  const [secret, setSecret] = useState('');
+  const [description, setDescription] = useState('');
+  const [provider, setProvider] = useState('generic');
+  const [verificationType, setVerificationType] = useState('generic_hmac');
 
   useEffect(() => {
     dispatch(fetchSourcesRequest());
@@ -40,265 +50,270 @@ export const SourcesPage: React.FC = () => {
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!name || !slug) {
+      toast.error('Validation Error', 'Name and URL slug are required.');
+      return;
+    }
+
     dispatch(
       createSourceRequest({
         name,
-        slug,
+        slug: slug.toLowerCase().replace(/[^a-z0-9-_]/g, '-'),
+        description: description || undefined,
         provider,
         verification_type: verificationType,
-        secret: secret || undefined,
       })
     );
-    setIsCreateOpen(false);
+
+    setIsCreateModalOpen(false);
+    toast.success('Source Created', 'Inbound webhook endpoint is active.');
+    // Reset form
     setName('');
     setSlug('');
-    setSecret('');
+    setDescription('');
   };
 
-  const handleCopyUrl = (s: Source) => {
-    const url = `${window.location.origin}/hooks/${s.slug}`;
-    navigator.clipboard.writeText(url);
-    setCopiedSlug(s.slug);
-    setTimeout(() => setCopiedSlug(null), 2000);
-  };
-
-  const handleRotateSecret = (s: Source) => {
-    if (!confirm(`Rotate signing secret for source "${s.name}"? Existing webhooks will need updated keys.`)) return;
-    dispatch(rotateSecretRequest(s.id));
-  };
-
-  const handleViewLogs = (s: Source) => {
-    dispatch(fetchVerificationLogsRequest(s));
-  };
+  const filteredSources = sources.filter(
+    (s) =>
+      s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      s.slug.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-150">
+    <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-150">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight">Inbound Webhook Sources</h1>
-          <p className="text-xs text-zinc-400">Manage incoming webhook endpoints, signature validation algorithms, and signing keys.</p>
+          <h1 className="text-2xl font-extrabold text-white tracking-tight">Inbound Sources</h1>
+          <p className="text-xs text-zinc-400 mt-1">
+            Configure webhook entrypoints, cryptographic HMAC verification keys, and payload ingestion.
+          </p>
         </div>
         <button
-          onClick={() => setIsCreateOpen(true)}
-          className="flex items-center space-x-2 px-4 py-2 rounded-lg bg-white text-zinc-950 font-semibold text-xs hover:bg-zinc-200 transition-colors shadow-md"
+          onClick={() => setIsCreateModalOpen(true)}
+          className="px-4 py-2.5 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 font-semibold text-xs transition-all shadow-md flex items-center space-x-2 active:scale-95 self-start sm:self-auto"
         >
-          <Plus className="w-3.5 h-3.5" />
-          <span>New Inbound Source</span>
+          <Plus className="w-4 h-4" />
+          <span>Create Source</span>
         </button>
       </div>
 
-      {generatedSecret && (
-        <div className="p-4 rounded-xl bg-amber-950/40 border border-amber-800/60 text-amber-300 text-xs space-y-1 animate-in fade-in">
-          <div className="font-semibold text-amber-400">New Signing Secret Generated (Copy Now):</div>
-          <code className="font-mono bg-black/60 px-2 py-1 rounded block text-white select-all">
-            {generatedSecret}
-          </code>
+      {/* Filter & Search Bar */}
+      <div className="flex items-center space-x-3 bg-zinc-950 p-2 rounded-2xl border border-zinc-800">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
+          <input
+            type="text"
+            placeholder="Search sources by name or URL slug..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-transparent pl-10 pr-4 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none"
+          />
         </div>
-      )}
+        <span className="text-xs font-mono text-zinc-500 px-3">
+          {filteredSources.length} sources
+        </span>
+      </div>
 
-      {/* Sources Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-        {sources.map((s) => (
-          <div
-            key={s.id}
-            className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 hover:border-zinc-700 transition-all space-y-4 shadow-lg flex flex-col justify-between"
-          >
-            <div>
-              <div className="flex items-start justify-between">
-                <div className="flex items-center space-x-2.5">
-                  <div className="p-2 rounded-lg bg-zinc-900 border border-zinc-800 text-emerald-400">
-                    <Radio className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">{s.name}</h3>
-                    <span className="text-[10px] font-mono text-zinc-500 uppercase">{s.provider}</span>
-                  </div>
-                </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  Active
-                </span>
-              </div>
+      {/* Sources Table */}
+      <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-4">
+        {isLoading ? (
+          <TableSkeleton rows={5} cols={5} />
+        ) : filteredSources.length === 0 ? (
+          <EmptyState
+            icon={Radio}
+            title="No webhook sources found"
+            description="Create an inbound source to generate public webhook URLs for Stripe, GitHub, Shopify, or custom apps."
+            actionText="Create your first source"
+            onAction={() => setIsCreateModalOpen(true)}
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-zinc-800 text-zinc-500 font-mono text-[10px] uppercase">
+                  <th className="py-3 px-3">Source Name</th>
+                  <th className="py-3 px-3">Inbound URL Slug</th>
+                  <th className="py-3 px-3">Provider & Verification</th>
+                  <th className="py-3 px-3">Status</th>
+                  <th className="py-3 px-3">Created</th>
+                  <th className="py-3 px-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/60 font-mono">
+                {filteredSources.map((source) => (
+                  <tr
+                    key={source.id}
+                    onClick={() => navigate(`/sources/${source.id}`)}
+                    className="hover:bg-zinc-900/40 cursor-pointer transition-colors group"
+                  >
+                    <td className="py-3.5 px-3">
+                      <div className="font-bold text-white font-sans group-hover:text-emerald-400 transition-colors flex items-center space-x-2">
+                        <Radio className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        <span>{source.name}</span>
+                      </div>
+                      {source.description && (
+                        <div className="text-[11px] text-zinc-500 font-sans truncate max-w-xs">
+                          {source.description}
+                        </div>
+                      )}
+                    </td>
 
-              {/* Endpoint URL bar */}
-              <div className="mt-4 p-2 rounded-lg bg-zinc-950 border border-zinc-800 flex items-center justify-between text-xs font-mono">
-                <span className="text-zinc-400 truncate max-w-[200px]">/hooks/{s.slug}</span>
-                <button
-                  onClick={() => handleCopyUrl(s)}
-                  className="text-zinc-500 hover:text-white p-1 rounded transition-colors"
-                >
-                  {copiedSlug === s.slug ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
-              </div>
+                    <td className="py-3.5 px-3 text-emerald-400 font-mono font-semibold">
+                      /hooks/{source.slug}
+                    </td>
 
-              <div className="mt-3 text-xs text-zinc-400 space-y-1 font-mono">
-                <div className="flex justify-between">
-                  <span className="text-zinc-500">Verification:</span>
-                  <span className="text-zinc-300">{s.verification_type}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-500">Secret:</span>
-                  <span className="text-zinc-300">{s.has_secret ? 'Configured •••••' : 'None'}</span>
-                </div>
-              </div>
-            </div>
+                    <td className="py-3.5 px-3">
+                      <div className="flex items-center space-x-1.5 text-zinc-300 capitalize font-sans">
+                        <span className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-[10px] font-mono">
+                          {source.provider}
+                        </span>
+                        <span className="text-zinc-500">•</span>
+                        <span className="text-zinc-400 text-[11px] font-mono">
+                          {source.verification_type}
+                        </span>
+                      </div>
+                    </td>
 
-            <div className="pt-3 border-t border-zinc-800/80 flex items-center justify-between text-xs">
-              <button
-                onClick={() => handleViewLogs(s)}
-                className="text-zinc-400 hover:text-white font-medium"
-              >
-                Verification Logs
-              </button>
-              <button
-                onClick={() => handleRotateSecret(s)}
-                className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center space-x-1"
-              >
-                <RotateCw className="w-3 h-3" />
-                <span>Rotate Secret</span>
-              </button>
-            </div>
+                    <td className="py-3.5 px-3">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                          source.is_active
+                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                            : 'bg-zinc-800 text-zinc-400'
+                        }`}
+                      >
+                        {source.is_active ? 'Active' : 'Inactive'}
+                      </span>
+                    </td>
+
+                    <td className="py-3.5 px-3 text-zinc-400">
+                      {new Date(source.created_at).toLocaleDateString()}
+                    </td>
+
+                    <td className="py-3.5 px-3 text-right">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/sources/${source.id}`);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-xs font-semibold inline-flex items-center space-x-1 transition-colors"
+                      >
+                        <span>Manage</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        ))}
+        )}
       </div>
 
       {/* Create Source Modal */}
-      {isCreateOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in">
-          <div className="w-full max-w-lg bg-[#121215] border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-900/40">
-              <h3 className="text-sm font-semibold text-white">Create Inbound Webhook Source</h3>
-              <button onClick={() => setIsCreateOpen(false)} className="text-zinc-400 hover:text-white">
-                <X className="w-4 h-4" />
-              </button>
+      {isCreateModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-[#121215] border border-zinc-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <Radio className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Create Inbound Source</h3>
+                  <p className="text-xs text-zinc-400">Configure provider and cryptographic signing</p>
+                </div>
+              </div>
             </div>
 
-            <form onSubmit={handleCreate} className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-mono text-zinc-400 mb-1">Source Name</label>
+            <form onSubmit={handleCreate} className="space-y-4 text-xs font-mono">
+              <div className="space-y-1">
+                <label className="text-zinc-400">Source Name</label>
                 <input
                   type="text"
                   required
-                  placeholder="Stripe Production Hooks"
+                  placeholder="Stripe Production"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs font-mono text-zinc-100 bg-[#09090b] border border-zinc-800 rounded-lg focus:outline-none focus:border-zinc-600"
+                  onChange={(e) => {
+                    setName(e.target.value);
+                    if (!slug) {
+                      setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-_]/g, '-'));
+                    }
+                  }}
+                  className="w-full p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600 font-mono text-xs"
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-mono text-zinc-400 mb-1">Slug (URL Endpoint)</label>
+              <div className="space-y-1">
+                <label className="text-zinc-400">Inbound URL Slug (/hooks/:slug)</label>
                 <input
                   type="text"
                   required
-                  placeholder="stripe-prod-payments"
+                  placeholder="stripe-prod"
                   value={slug}
                   onChange={(e) => setSlug(e.target.value)}
-                  className="w-full px-3 py-2 text-xs font-mono text-zinc-100 bg-[#09090b] border border-zinc-800 rounded-lg focus:outline-none focus:border-zinc-600"
+                  className="w-full p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-emerald-400 focus:outline-none focus:border-zinc-600 font-mono text-xs"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-mono text-zinc-400 mb-1">Provider Type</label>
+                <div className="space-y-1">
+                  <label className="text-zinc-400">Provider</label>
                   <select
                     value={provider}
                     onChange={(e) => setProvider(e.target.value)}
-                    className="w-full px-3 py-2 text-xs font-mono text-zinc-100 bg-[#09090b] border border-zinc-800 rounded-lg focus:outline-none focus:border-zinc-600"
+                    className="w-full p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600 font-mono text-xs"
                   >
+                    <option value="generic">Generic</option>
                     <option value="stripe">Stripe</option>
                     <option value="github">GitHub</option>
                     <option value="shopify">Shopify</option>
-                    <option value="generic">Generic / Custom</option>
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-mono text-zinc-400 mb-1">Verification Algorithm</label>
+                <div className="space-y-1">
+                  <label className="text-zinc-400">Verification Type</label>
                   <select
                     value={verificationType}
                     onChange={(e) => setVerificationType(e.target.value)}
-                    className="w-full px-3 py-2 text-xs font-mono text-zinc-100 bg-[#09090b] border border-zinc-800 rounded-lg focus:outline-none focus:border-zinc-600"
+                    className="w-full p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600 font-mono text-xs"
                   >
-                    <option value="hmac_sha256">HMAC-SHA256</option>
-                    <option value="stripe">Stripe v1 Signature</option>
-                    <option value="github">GitHub X-Hub Signature</option>
-                    <option value="shopify">Shopify Base64 HMAC</option>
-                    <option value="none">None (Passthrough)</option>
+                    <option value="generic_hmac">HMAC-SHA256</option>
+                    <option value="stripe">Stripe v1 Header</option>
+                    <option value="github">GitHub X-Hub Header</option>
+                    <option value="none">None (Open)</option>
                   </select>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-mono text-zinc-400 mb-1">Signing Secret (Optional)</label>
+              <div className="space-y-1">
+                <label className="text-zinc-400">Description (Optional)</label>
                 <input
                   type="text"
-                  placeholder="whsec_xxxxxxxxxx"
-                  value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
-                  className="w-full px-3 py-2 text-xs font-mono text-zinc-100 bg-[#09090b] border border-zinc-800 rounded-lg focus:outline-none focus:border-zinc-600"
+                  placeholder="Inbound customer payment webhooks"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="w-full p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-white focus:outline-none focus:border-zinc-600 font-mono text-xs"
                 />
               </div>
 
-              <div className="flex items-center justify-end space-x-3 pt-3">
+              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-zinc-800/80">
                 <button
                   type="button"
-                  onClick={() => setIsCreateOpen(false)}
-                  className="px-4 py-2 text-xs text-zinc-400 hover:text-white"
+                  onClick={() => setIsCreateModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-semibold text-xs transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold rounded-lg bg-white text-zinc-950 hover:bg-zinc-200"
+                  className="px-5 py-2 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 font-semibold text-xs transition-all shadow-md active:scale-95"
                 >
-                  Create Source
+                  Create Inbound Source
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Verification Logs Modal */}
-      {selectedSource && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in">
-          <div className="w-full max-w-2xl bg-[#121215] border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-900/40">
-              <h3 className="text-sm font-semibold text-white">
-                Verification Logs: {selectedSource.name}
-              </h3>
-              <button onClick={() => dispatch(clearSelectedSource())} className="text-zinc-400 hover:text-white">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-6 max-h-96 overflow-y-auto space-y-2">
-              {verificationLogs.length === 0 ? (
-                <div className="p-8 text-center text-xs text-zinc-500 font-mono">
-                  No verification history recorded for this source yet.
-                </div>
-              ) : (
-                verificationLogs.map((log, idx) => (
-                  <div
-                    key={idx}
-                    className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center justify-between text-xs font-mono"
-                  >
-                    <div className="flex items-center space-x-2.5">
-                      {log.signature_valid ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      ) : (
-                        <XCircle className="w-4 h-4 text-rose-400" />
-                      )}
-                      <span className={log.signature_valid ? 'text-zinc-200' : 'text-rose-300 font-semibold'}>
-                        {log.signature_valid ? 'Signature Passed' : 'Invalid Signature'}
-                      </span>
-                    </div>
-                    <span className="text-zinc-500">{new Date(log.received_at).toLocaleString()}</span>
-                  </div>
-                ))
-              )}
-            </div>
           </div>
         </div>
       )}

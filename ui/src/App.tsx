@@ -1,19 +1,27 @@
 import React, { useEffect, useState } from 'react';
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { SendWebhookModal } from './components/common/SendWebhookModal';
 import { CommandPalette } from './components/layout/CommandPalette';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
+import { ToastProvider } from './context/ToastContext';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { AuthPage } from './pages/AuthPage';
 import { DeliveriesPage } from './pages/DeliveriesPage';
+import { DeliveryDetailPage } from './pages/DeliveryDetailPage';
+import { DestinationDetailPage } from './pages/DestinationDetailPage';
 import { DestinationsPage } from './pages/DestinationsPage';
 import { DlqPage } from './pages/DlqPage';
 import { DocsPage } from './pages/DocsPage';
+import { EventDetailPage } from './pages/EventDetailPage';
 import { EventsPage } from './pages/EventsPage';
 import { OverviewPage } from './pages/OverviewPage';
+import { SourceDetailPage } from './pages/SourceDetailPage';
 import { SourcesPage } from './pages/SourcesPage';
+import { StatisticsPage } from './pages/StatisticsPage';
+import { SubscriptionDetailPage } from './pages/SubscriptionDetailPage';
 import { SubscriptionsPage } from './pages/SubscriptionsPage';
+import { TenantSettingsPage } from './pages/TenantSettingsPage';
 import { TransformationsPage } from './pages/TransformationsPage';
 import { useAppDispatch, useAppSelector } from './store/hooks';
 import { checkAuthRequest } from './store/slices/authSlice';
@@ -67,11 +75,30 @@ function AppLayout() {
         <Header onOpenSendModal={() => setIsSendModalOpen(true)} />
         <main className="flex-1 overflow-y-auto bg-grid-pattern">
           <Routes>
+            {/* OVERVIEW */}
             <Route
               path="/"
               element={
                 <ProtectedRoute>
                   <OverviewPage onOpenSendModal={() => setIsSendModalOpen(true)} />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* INGESTION */}
+            <Route
+              path="/sources"
+              element={
+                <ProtectedRoute>
+                  <SourcesPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/sources/:id"
+              element={
+                <ProtectedRoute>
+                  <SourceDetailPage />
                 </ProtectedRoute>
               }
             />
@@ -84,34 +111,28 @@ function AppLayout() {
               }
             />
             <Route
-              path="/deliveries"
+              path="/events/:id"
               element={
                 <ProtectedRoute>
-                  <DeliveriesPage />
+                  <EventDetailPage />
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/dlq"
-              element={
-                <ProtectedRoute>
-                  <DlqPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/sources"
-              element={
-                <ProtectedRoute>
-                  <SourcesPage />
-                </ProtectedRoute>
-              }
-            />
+
+            {/* DELIVERY */}
             <Route
               path="/destinations"
               element={
                 <ProtectedRoute>
                   <DestinationsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/destinations/:id"
+              element={
+                <ProtectedRoute>
+                  <DestinationDetailPage />
                 </ProtectedRoute>
               }
             />
@@ -124,6 +145,58 @@ function AppLayout() {
               }
             />
             <Route
+              path="/subscriptions/:id"
+              element={
+                <ProtectedRoute>
+                  <SubscriptionDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/deliveries"
+              element={
+                <ProtectedRoute>
+                  <DeliveriesPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/deliveries/:id"
+              element={
+                <ProtectedRoute>
+                  <DeliveryDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dlq"
+              element={
+                <ProtectedRoute>
+                  <DlqPage />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* OBSERVABILITY */}
+            <Route
+              path="/stats"
+              element={
+                <ProtectedRoute>
+                  <StatisticsPage />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* DEVELOPER */}
+            <Route
+              path="/api-keys"
+              element={
+                <ProtectedRoute>
+                  <ApiKeysPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/transformations"
               element={
                 <ProtectedRoute>
@@ -131,17 +204,20 @@ function AppLayout() {
                 </ProtectedRoute>
               }
             />
-            {/* Documentation is publicly accessible */}
             <Route path="/docs" element={<DocsPage />} />
             <Route path="/docs/:section" element={<DocsPage />} />
+
+            {/* ADMIN */}
             <Route
-              path="/apikeys"
+              path="/tenants/settings"
               element={
                 <ProtectedRoute>
-                  <ApiKeysPage />
+                  <TenantSettingsPage />
                 </ProtectedRoute>
               }
             />
+
+            {/* Fallback */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
@@ -165,7 +241,9 @@ function AppLayout() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AppLayout />
+      <ToastProvider>
+        <AppLayout />
+      </ToastProvider>
     </BrowserRouter>
   );
 }

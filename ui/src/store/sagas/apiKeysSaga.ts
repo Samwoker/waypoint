@@ -23,13 +23,13 @@ function* handleFetchApiKeys(): Generator<any, void, any> {
 }
 
 function* handleCreateApiKey(
-  action: PayloadAction<{ name: string; expiresInDays?: number }>
+  action: PayloadAction<{ name: string; expiresAt?: string }>
 ): Generator<any, void, any> {
   try {
     const created: ApiKeyCreated = yield call(
       [api, api.createApiKey],
       action.payload.name,
-      action.payload.expiresInDays
+      action.payload.expiresAt
     );
     yield put(createApiKeySuccess(created));
     yield put(fetchApiKeysRequest());

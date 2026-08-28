@@ -1,7 +1,7 @@
 import { call, put, select, takeLatest } from 'redux-saga/effects';
 import { PayloadAction } from '@reduxjs/toolkit';
 import { api } from '../../api/client';
-import { Delivery, DeliveryAttempt } from '../../types';
+import { Delivery, DeliveryAttempt, PaginatedDeliveries } from '../../types';
 import {
   fetchAttemptsSuccess,
   fetchDeliveriesFailure,
@@ -17,11 +17,12 @@ import {
 function* handleFetchDeliveries(): Generator<any, void, any> {
   try {
     const status: string = yield select((state: any) => state.deliveries.statusFilter);
-    const deliveries: Delivery[] = yield call([api, api.listDeliveries], {
-      status: status === 'all' ? undefined : status,
-      limit: 50,
-    });
-    yield put(fetchDeliveriesSuccess(deliveries));
+    const res: PaginatedDeliveries = yield call(
+      [api, api.listDeliveries],
+      status === 'all' ? undefined : status,
+      50
+    );
+    yield put(fetchDeliveriesSuccess(res.deliveries || []));
   } catch (error: any) {
     yield put(fetchDeliveriesFailure(error.message || 'Failed to fetch deliveries'));
   }
@@ -29,7 +30,7 @@ function* handleFetchDeliveries(): Generator<any, void, any> {
 
 function* handleSelectDelivery(action: PayloadAction<Delivery>): Generator<any, void, any> {
   try {
-    const attempts: DeliveryAttempt[] = yield call([api, api.listDeliveryAttempts], action.payload.id);
+    const attempts: DeliveryAttempt[] = yield call([api, api.getDeliveryAttempts], action.payload.id);
     yield put(fetchAttemptsSuccess(attempts));
   } catch (error: any) {
     yield put(fetchAttemptsSuccess([]));

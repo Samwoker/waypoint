@@ -11,9 +11,9 @@ import {
   testTransformationSuccess,
 } from '../slices/transformationsSlice';
 
-function* handleFetchTransformations(action: PayloadAction<string | undefined>): Generator<any, void, any> {
+function* handleFetchTransformations(): Generator<any, void, any> {
   try {
-    const transformations: Transformation[] = yield call([api, api.listTransformations], action.payload);
+    const transformations: Transformation[] = yield call([api, api.listTransformations]);
     yield put(fetchTransformationsSuccess(transformations));
   } catch (error: any) {
     yield put(fetchTransformationsFailure(error.message || 'Failed to fetch transformations'));

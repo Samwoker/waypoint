@@ -26,8 +26,8 @@ function* handleCreateDestination(
     name: string;
     url: string;
     timeout_ms?: number;
-    max_retry_count?: number;
-    rate_limit?: number;
+    max_retries?: number;
+    rate_limit_rps?: number;
   }>
 ): Generator<any, void, any> {
   try {
@@ -40,7 +40,7 @@ function* handleCreateDestination(
 
 function* handleResetCircuit(action: PayloadAction<string>): Generator<any, void, any> {
   try {
-    yield call([api, api.resetCircuit], action.payload);
+    yield call([api, api.resumeDestination], action.payload);
     yield put(fetchDestinationsRequest());
   } catch (error: any) {
     yield put(fetchDestinationsFailure(error.message || 'Failed to reset circuit'));

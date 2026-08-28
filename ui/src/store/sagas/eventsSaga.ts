@@ -1,7 +1,7 @@
 import { call, put, takeLatest } from 'redux-saga/effects';
 import { PayloadAction } from '@reduxjs/toolkit';
 import { api } from '../../api/client';
-import { EventItem } from '../../types';
+import { EventItem, PaginatedEvents } from '../../types';
 import {
   fetchEventsFailure,
   fetchEventsRequest,
@@ -11,24 +11,26 @@ import {
   sendWebhookSuccess,
 } from '../slices/eventsSlice';
 
-function* handleFetchEvents(): Generator<any, void, any> {
+function* handleFetchEvents(action?: PayloadAction<{ limit?: number; cursor?: string } | undefined>): Generator<any, void, any> {
   try {
-    const events: EventItem[] = yield call([api, api.listEvents], 50);
-    yield put(fetchEventsSuccess(events));
+    const limit = action?.payload?.limit || 50;
+    const cursor = action?.payload?.cursor;
+    const res: PaginatedEvents = yield call([api, api.listEvents], limit, cursor);
+    yield put(fetchEventsSuccess(res.events || []));
   } catch (error: any) {
     yield put(fetchEventsFailure(error.message || 'Failed to fetch events'));
   }
 }
 
 function* handleSendWebhook(
-  action: PayloadAction<{ slug: string; payload: any; headers?: Record<string, string> }>
+  action: PayloadAction<{ slug: string; payload: any; eventType?: string }>
 ): Generator<any, void, any> {
   try {
     const res: any = yield call(
-      [api, api.sendWebhook],
+      [api, api.sendTestWebhook],
       action.payload.slug,
       action.payload.payload,
-      action.payload.headers
+      action.payload.eventType || 'test.event'
     );
     yield put(sendWebhookSuccess(res));
     yield put(fetchEventsRequest());
