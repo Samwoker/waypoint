@@ -1,24 +1,24 @@
 import React from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, Link } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
   BarChart3,
   BookOpen,
-  Building,
-  CheckCircle2,
   Code2,
-  Cpu,
-  Inbox,
+  CreditCard,
+  Gauge,
   Key,
   Layers,
   LayoutDashboard,
+  LucideIcon,
   Radio,
   RefreshCw,
   Search,
   Send,
   Settings,
   Shield,
+  Sparkles,
   Zap,
 } from 'lucide-react';
 import { useAppSelector } from '../../store/hooks';
@@ -27,19 +27,32 @@ interface SidebarProps {
   onOpenCommandPalette: () => void;
 }
 
+interface NavItem {
+  label: string;
+  icon: LucideIcon;
+  path: string;
+  aliases?: string[];
+}
+
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
 export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { currentTenant } = useAppSelector((state) => state.auth);
+  const { currentTenant, user } = useAppSelector((state) => state.auth);
 
-  const navGroups = [
+  const navGroups: NavGroup[] = [
     {
       label: 'OVERVIEW',
       items: [
         {
           label: 'Dashboard',
           icon: LayoutDashboard,
-          path: '/',
+          path: '/dashboard',
+          aliases: ['/'],
         },
       ],
     },
@@ -50,11 +63,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
           label: 'Sources',
           icon: Radio,
           path: '/sources',
+          aliases: ['/dashboard/sources'],
         },
         {
           label: 'Events',
           icon: Layers,
           path: '/events',
+          aliases: ['/dashboard/events'],
         },
       ],
     },
@@ -65,21 +80,42 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
           label: 'Destinations',
           icon: Send,
           path: '/destinations',
+          aliases: ['/dashboard/destinations'],
         },
         {
           label: 'Subscriptions',
           icon: Zap,
           path: '/subscriptions',
+          aliases: ['/dashboard/subscriptions'],
         },
         {
           label: 'Deliveries',
           icon: Activity,
           path: '/deliveries',
+          aliases: ['/dashboard/deliveries'],
         },
         {
           label: 'Dead Letter Queue',
           icon: AlertTriangle,
           path: '/dlq',
+          aliases: ['/dashboard/dlq'],
+        },
+      ],
+    },
+    {
+      label: 'SUBSCRIPTION & USAGE',
+      items: [
+        {
+          label: 'Usage & Quotas',
+          icon: Gauge,
+          path: '/usage',
+          aliases: ['/dashboard/usage'],
+        },
+        {
+          label: 'Billing & Plans',
+          icon: CreditCard,
+          path: '/billing',
+          aliases: ['/dashboard/billing'],
         },
       ],
     },
@@ -90,6 +126,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
           label: 'Statistics',
           icon: BarChart3,
           path: '/stats',
+          aliases: ['/dashboard/stats'],
         },
       ],
     },
@@ -100,11 +137,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
           label: 'API Keys',
           icon: Key,
           path: '/api-keys',
+          aliases: ['/dashboard/api-keys'],
         },
         {
           label: 'Transformations',
           icon: Code2,
           path: '/transformations',
+          aliases: ['/dashboard/transformations'],
         },
         {
           label: 'Documentation',
@@ -117,9 +156,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
       label: 'ADMIN',
       items: [
         {
-          label: 'Tenant Settings',
+          label: 'Organization Settings',
           icon: Settings,
-          path: '/tenants/settings',
+          path: '/settings',
+          aliases: ['/dashboard/settings', '/tenants/settings', '/tenants'],
         },
       ],
     },
@@ -129,22 +169,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
     <aside className="w-64 border-r border-zinc-800 bg-[#09090b] flex flex-col justify-between shrink-0 select-none">
       {/* Brand Header & Quick Command Palette */}
       <div className="p-4 space-y-4">
-        <div className="flex items-center space-x-2.5 px-2 py-1">
-          <div className="p-2 rounded-xl bg-gradient-to-tr from-zinc-800 to-zinc-700 border border-zinc-600 shadow-sm">
+        <Link to="/dashboard" className="flex items-center space-x-2.5 px-2 py-1 group">
+          <div className="p-2 rounded-xl bg-gradient-to-tr from-zinc-800 to-zinc-700 border border-zinc-600 shadow-sm group-hover:scale-105 transition-transform">
             <Layers className="w-4 h-4 text-white" />
           </div>
           <div>
             <div className="font-extrabold text-sm tracking-tight text-white flex items-center space-x-1.5">
               <span>RelayCore</span>
               <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                v1.0
+                PaaS
               </span>
             </div>
-            <div className="text-[10px] text-zinc-500 font-mono">
-              {currentTenant ? currentTenant.name : 'Production Gateway'}
+            <div className="text-[10px] text-zinc-500 font-mono truncate max-w-[130px]">
+              {currentTenant?.name || user?.email || 'Workspace'}
             </div>
           </div>
-        </div>
+        </Link>
 
         {/* Global Search / Command Palette shortcut button */}
         <button
@@ -172,9 +212,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
             <div className="space-y-0.5">
               {group.items.map((item) => {
                 const isActive =
-                  item.path === '/'
-                    ? location.pathname === '/'
-                    : location.pathname.startsWith(item.path);
+                  location.pathname === item.path ||
+                  (item.aliases && item.aliases.includes(location.pathname)) ||
+                  (item.path !== '/' && item.path !== '/dashboard' && location.pathname.startsWith(item.path));
                 const Icon = item.icon;
 
                 return (
@@ -202,16 +242,28 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenCommandPalette }) => {
         ))}
       </div>
 
-      {/* Footer System Status Badge */}
-      <div className="p-4 border-t border-zinc-800/80">
-        <div className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-950 border border-zinc-800/80">
-          <div className="flex items-center space-x-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-[11px] font-mono font-semibold text-zinc-300">
-              Gateway Active
+      {/* Footer Plan Card */}
+      <div className="p-3 border-t border-zinc-800/80 space-y-2">
+        <div className="p-3 rounded-2xl bg-zinc-950 border border-zinc-800/80 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono font-bold uppercase text-zinc-400">
+              Current Plan
+            </span>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              FREE
             </span>
           </div>
-          <span className="text-[10px] font-mono text-zinc-500">Postgres+Redis</span>
+
+          <div className="flex items-center justify-between text-xs pt-0.5">
+            <span className="text-zinc-400 text-[11px]">25K Events / mo</span>
+            <Link
+              to="/billing"
+              className="text-emerald-400 hover:text-emerald-300 font-semibold text-[11px] flex items-center space-x-0.5"
+            >
+              <span>Upgrade</span>
+              <Sparkles className="w-3 h-3 ml-0.5" />
+            </Link>
+          </div>
         </div>
       </div>
     </aside>

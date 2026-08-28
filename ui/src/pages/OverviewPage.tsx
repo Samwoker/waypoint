@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   Activity,
   AlertCircle,
@@ -8,11 +8,13 @@ import {
   BarChart3,
   CheckCircle2,
   Clock,
+  Key,
   Layers,
   Radio,
   RefreshCw,
   Send,
   ShieldCheck,
+  Sparkles,
   Zap,
 } from 'lucide-react';
 import {
@@ -29,6 +31,7 @@ import { fetchOverviewRequest } from '../store/slices/overviewSlice';
 import { api } from '../api/client';
 import { Destination, DlqRecord, EventItem } from '../types';
 import { Skeleton } from '../components/common/Skeleton';
+import { getPlan, formatEventLimit, getUsagePercentage } from '../config/plans';
 
 interface OverviewPageProps {
   onOpenSendModal: () => void;
@@ -37,6 +40,7 @@ interface OverviewPageProps {
 export const OverviewPage: React.FC<OverviewPageProps> = ({ onOpenSendModal }) => {
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
+  const { user, currentTenant } = useAppSelector((state) => state.auth);
   const { overviewStats: stats, timeseries, isLoading } = useAppSelector(
     (state) => state.overview
   );
@@ -45,23 +49,35 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onOpenSendModal }) =
   const [unhealthyDestinations, setUnhealthyDestinations] = useState<Destination[]>([]);
   const [dlqItems, setDlqItems] = useState<DlqRecord[]>([]);
   const [recentEvents, setRecentEvents] = useState<EventItem[]>([]);
+  const [hasSources, setHasSources] = useState(false);
+  const [hasDestinations, setHasDestinations] = useState(false);
+  const [hasSubscriptions, setHasSubscriptions] = useState(false);
 
   useEffect(() => {
     dispatch(fetchOverviewRequest({ period }));
 
-    // Fetch destination health, DLQ, and recent events
+    // Fetch destination health, DLQ, recent events, and check onboarding state
     Promise.all([
       api.listDestinations(),
       api.listDlq(5),
       api.listEvents(5),
-    ]).then(([dests, dlq, evtsRes]) => {
+      api.listSources(),
+      api.listSubscriptions(),
+    ]).then(([dests, dlq, evtsRes, sourcesRes, subsRes]) => {
       setUnhealthyDestinations(
         dests.filter((d) => d.status === 'circuit_open' || d.consecutive_failures > 0)
       );
       setDlqItems(dlq.items || []);
       setRecentEvents(evtsRes.events || []);
+      setHasDestinations(dests.length > 0);
+      setHasSources(sourcesRes.length > 0);
+      setHasSubscriptions(subsRes.length > 0);
     });
   }, [dispatch, period]);
+
+  const currentPlan = getPlan('free');
+  const totalEvents = stats?.total_events || 0;
+  const usagePercent = getUsagePercentage(totalEvents, currentPlan.eventLimit);
 
   if (isLoading && !stats) {
     return (
@@ -78,50 +94,63 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onOpenSendModal }) =
   }
 
   const successRate = stats?.success_rate
-    ? `${(stats.success_rate * 100).toFixed(1)}%`
-    : '100.0%';
+    ? (Number(stats.success_rate) * 100).toFixed(1)
+    : '100.0';
 
-  const hasOperationalIssues = unhealthyDestinations.length > 0 || dlqItems.length > 0;
+  const chartData = (timeseries || []).map((pt) => ({
+    time: pt.bucket.split(' ')[1] || pt.bucket,
+    events: Number(pt.value) || 0,
+  }));
+
+  const allOnboardingComplete =
+    hasSources && hasDestinations && hasSubscriptions && recentEvents.length > 0;
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-150">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center space-x-2.5">
-            <h1 className="text-2xl font-extrabold text-white tracking-tight">
-              Operational Gateway Dashboard
-            </h1>
+    <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-150 font-sans">
+      {/* Top Header with Welcome & Plan Meter */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800 pb-6">
+        <div className="space-y-1">
+          <div className="flex items-center space-x-2">
+            <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">
+              {currentTenant?.name || user?.email || 'Workspace Dashboard'}
+            </span>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              Live
+              FREE PLAN
             </span>
           </div>
-          <p className="text-xs text-zinc-400 mt-1">
-            Real-time webhook ingestion health, worker dispatch success rates, and delivery latencies.
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+            Overview & Telemetry
+          </h1>
+          <p className="text-xs text-zinc-400">
+            Real-time event stream monitoring, delivery performance, and circuit breaker status.
           </p>
         </div>
 
-        <div className="flex items-center space-x-3 self-start sm:self-auto">
-          {/* Period selector */}
-          <div className="flex bg-zinc-950 p-1 rounded-xl border border-zinc-800">
-            {(['1h', '24h', '7d', '30d'] as const).map((p) => (
-              <button
-                key={p}
-                onClick={() => setPeriod(p)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-semibold transition-all ${
-                  period === p
-                    ? 'bg-zinc-800 text-white shadow-sm border border-zinc-700/60'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
+        {/* Right: Quick Plan Meter & Actions */}
+        <div className="flex items-center space-x-3">
+          <Link
+            to="/dashboard/usage"
+            className="p-3 rounded-2xl bg-[#0e0e11] hover:bg-zinc-900 border border-zinc-800 transition-colors flex items-center space-x-3 text-xs"
+          >
+            <div>
+              <div className="flex justify-between items-center text-[10px] font-mono text-zinc-400 space-x-2">
+                <span>Monthly Events</span>
+                <span className="text-white font-bold">{usagePercent}%</span>
+              </div>
+              <div className="w-24 h-1.5 bg-zinc-950 rounded-full mt-1.5 overflow-hidden border border-zinc-800">
+                <div
+                  className="h-full bg-emerald-500 rounded-full transition-all"
+                  style={{ width: `${usagePercent}%` }}
+                />
+              </div>
+            </div>
+            <span className="text-zinc-500 hover:text-white font-mono text-xs">→</span>
+          </Link>
 
           <button
+            type="button"
             onClick={onOpenSendModal}
-            className="px-4 py-2 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 font-semibold text-xs transition-all shadow-md flex items-center space-x-2 active:scale-95"
+            className="flex items-center space-x-1.5 px-3.5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs shadow-md shadow-emerald-500/10 transition-all active:scale-95"
           >
             <Send className="w-3.5 h-3.5" />
             <span>Send Test Webhook</span>
@@ -129,205 +158,304 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({ onOpenSendModal }) =
         </div>
       </div>
 
-      {/* Prominent Operational Issue Alert (Section 5: Surface Failures Prominently) */}
-      {hasOperationalIssues && (
-        <div className="p-5 rounded-2xl bg-amber-950/30 border border-amber-800/40 text-amber-200 space-y-3 animate-in fade-in">
-          <div className="flex items-center space-x-2.5 font-bold text-sm text-amber-300">
-            <AlertTriangle className="w-4 h-4 text-amber-400" />
-            <span>Operational Attention Needed</span>
+      {/* NEW USER ONBOARDING WIZARD (Shows if not all resources created) */}
+      {!allOnboardingComplete && (
+        <div className="p-6 rounded-3xl bg-gradient-to-tr from-[#121215] to-[#0e0e11] border border-zinc-800/80 space-y-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2.5">
+              <Sparkles className="w-4 h-4 text-emerald-400" />
+              <h3 className="text-sm font-bold text-white">Getting Started with RelayCore</h3>
+            </div>
+            <span className="text-xs font-mono text-zinc-500">
+              Follow these 4 quick steps to stream live webhooks
+            </span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-            {unhealthyDestinations.length > 0 && (
-              <div
-                onClick={() => navigate('/destinations')}
-                className="p-3 rounded-xl bg-zinc-950/80 border border-amber-800/30 cursor-pointer hover:bg-zinc-900 transition-colors flex items-center justify-between"
-              >
-                <div>
-                  <span className="font-semibold text-white">
-                    {unhealthyDestinations.length} Unhealthy Destinations
-                  </span>
-                  <p className="text-[11px] text-zinc-400">
-                    Tripped circuit breakers or consecutive delivery timeouts detected.
-                  </p>
-                </div>
-                <ArrowRight className="w-4 h-4 text-amber-400" />
-              </div>
-            )}
 
-            {dlqItems.length > 0 && (
-              <div
-                onClick={() => navigate('/dlq')}
-                className="p-3 rounded-xl bg-zinc-950/80 border border-amber-800/30 cursor-pointer hover:bg-zinc-900 transition-colors flex items-center justify-between"
-              >
-                <div>
-                  <span className="font-semibold text-white">
-                    {dlqItems.length} Dead-Lettered Deliveries
-                  </span>
-                  <p className="text-[11px] text-zinc-400">
-                    Exhausted retry policies awaiting recovery or requeue.
-                  </p>
-                </div>
-                <ArrowRight className="w-4 h-4 text-amber-400" />
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            {/* Step 1: Create Source */}
+            <Link
+              to="/dashboard/sources"
+              className={`p-4 rounded-2xl border transition-all flex flex-col justify-between space-y-2 ${
+                hasSources
+                  ? 'bg-emerald-950/10 border-emerald-800/40 text-zinc-300'
+                  : 'bg-zinc-950 hover:bg-zinc-900 border-zinc-800 text-zinc-300'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-white">1. Create Source</span>
+                {hasSources ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Layers className="w-4 h-4 text-zinc-500" />
+                )}
               </div>
-            )}
+              <p className="text-[11px] text-zinc-400">
+                Generate your public <code className="text-emerald-400">/hooks/:slug</code> URL.
+              </p>
+            </Link>
+
+            {/* Step 2: Create Destination */}
+            <Link
+              to="/dashboard/destinations"
+              className={`p-4 rounded-2xl border transition-all flex flex-col justify-between space-y-2 ${
+                hasDestinations
+                  ? 'bg-emerald-950/10 border-emerald-800/40 text-zinc-300'
+                  : 'bg-zinc-950 hover:bg-zinc-900 border-zinc-800 text-zinc-300'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-white">2. Register Destination</span>
+                {hasDestinations ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Radio className="w-4 h-4 text-zinc-500" />
+                )}
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                Enter your receiver URL & timeout threshold.
+              </p>
+            </Link>
+
+            {/* Step 3: Create Subscription */}
+            <Link
+              to="/dashboard/subscriptions"
+              className={`p-4 rounded-2xl border transition-all flex flex-col justify-between space-y-2 ${
+                hasSubscriptions
+                  ? 'bg-emerald-950/10 border-emerald-800/40 text-zinc-300'
+                  : 'bg-zinc-950 hover:bg-zinc-900 border-zinc-800 text-zinc-300'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-white">3. Create Subscription</span>
+                {hasSubscriptions ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Activity className="w-4 h-4 text-zinc-500" />
+                )}
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                Route events with wildcard filters (<code className="text-blue-400">payment.*</code>).
+              </p>
+            </Link>
+
+            {/* Step 4: Send Test Webhook */}
+            <div
+              onClick={onOpenSendModal}
+              className={`p-4 rounded-2xl border cursor-pointer transition-all flex flex-col justify-between space-y-2 ${
+                recentEvents.length > 0
+                  ? 'bg-emerald-950/10 border-emerald-800/40 text-zinc-300'
+                  : 'bg-zinc-950 hover:bg-zinc-900 border-zinc-800 text-zinc-300'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-white">4. Send Webhook</span>
+                {recentEvents.length > 0 ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Send className="w-4 h-4 text-zinc-500" />
+                )}
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                Dispatch an event & trace the delivery in real-time.
+              </p>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Top Level KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 space-y-1">
-          <div className="flex items-center justify-between text-zinc-400 text-xs">
-            <span className="font-mono text-[10px] uppercase">Ingested Events</span>
-            <Layers className="w-4 h-4 text-purple-400" />
+      {/* KPI Stats Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Total Events */}
+        <div className="p-5 rounded-2xl bg-[#0e0e11] border border-zinc-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-mono text-zinc-400 uppercase">Ingested Events</span>
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+              <Zap className="w-4 h-4" />
+            </div>
           </div>
-          <div className="text-2xl font-black text-white font-mono pt-1">
-            {stats?.total_events.toLocaleString() || '0'}
+          <div className="text-2xl font-extrabold text-white">
+            {stats?.total_events?.toLocaleString() || 0}
           </div>
-          <div className="text-[10px] font-mono text-zinc-500">Inbound Webhooks</div>
+          <span className="text-[11px] font-mono text-zinc-500 block">
+            Across active Inbound Sources
+          </span>
         </div>
 
-        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 space-y-1">
-          <div className="flex items-center justify-between text-zinc-400 text-xs">
-            <span className="font-mono text-[10px] uppercase">Success Rate</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+        {/* Deliveries */}
+        <div className="p-5 rounded-2xl bg-[#0e0e11] border border-zinc-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-mono text-zinc-400 uppercase">Total Deliveries</span>
+            <div className="w-7 h-7 rounded-lg bg-blue-500/10 text-blue-400 flex items-center justify-center">
+              <RefreshCw className="w-4 h-4" />
+            </div>
           </div>
-          <div className="text-2xl font-black text-emerald-400 font-mono pt-1">{successRate}</div>
-          <div className="text-[10px] font-mono text-zinc-500">Forwarded Successfully</div>
+          <div className="text-2xl font-extrabold text-white">
+            {stats?.total_deliveries?.toLocaleString() || 0}
+          </div>
+          <span className="text-[11px] font-mono text-zinc-500 block">
+            {stats?.delivered_count?.toLocaleString() || 0} successfully delivered
+          </span>
         </div>
 
-        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 space-y-1">
-          <div className="flex items-center justify-between text-zinc-400 text-xs">
-            <span className="font-mono text-[10px] uppercase">p50 / p95 Latency</span>
-            <Clock className="w-4 h-4 text-blue-400" />
+        {/* Success Rate */}
+        <div className="p-5 rounded-2xl bg-[#0e0e11] border border-zinc-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-mono text-zinc-400 uppercase">Success Rate</span>
+            <div className="w-7 h-7 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center">
+              <CheckCircle2 className="w-4 h-4" />
+            </div>
           </div>
-          <div className="text-2xl font-black text-white font-mono pt-1">
-            {stats?.p50_latency_ms || 42}ms <span className="text-sm font-normal text-zinc-500">/ {stats?.p95_latency_ms || 128}ms</span>
+          <div className="text-2xl font-extrabold text-emerald-400 font-mono">
+            {successRate}%
           </div>
-          <div className="text-[10px] font-mono text-zinc-500">Dispatch Latency</div>
+          <span className="text-[11px] font-mono text-zinc-500 block">
+            P95 Latency: <strong className="text-zinc-300 font-bold">{stats?.p95_latency_ms || 45}ms</strong>
+          </span>
         </div>
 
-        <div className="p-5 rounded-2xl bg-[#121215] border border-zinc-800 space-y-1">
-          <div className="flex items-center justify-between text-zinc-400 text-xs">
-            <span className="font-mono text-[10px] uppercase">Total Deliveries</span>
-            <Send className="w-4 h-4 text-emerald-400" />
+        {/* DLQ Count */}
+        <div className="p-5 rounded-2xl bg-[#0e0e11] border border-zinc-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-mono text-zinc-400 uppercase">Quarantined DLQ</span>
+            <div className="w-7 h-7 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
+              <AlertTriangle className="w-4 h-4" />
+            </div>
           </div>
-          <div className="text-2xl font-black text-white font-mono pt-1">
-            {stats?.total_deliveries.toLocaleString() || '0'}
+          <div className="text-2xl font-extrabold text-white font-mono">
+            {dlqItems.length}
           </div>
-          <div className="text-[10px] font-mono text-zinc-500">Outbound Forwardings</div>
+          <span className="text-[11px] font-mono text-zinc-500 block">
+            Exhausted retry budget
+          </span>
         </div>
       </div>
 
       {/* Throughput Area Chart */}
-      <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-4">
+      <div className="p-6 rounded-3xl bg-[#0e0e11] border border-zinc-800 space-y-4">
         <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <h3 className="text-sm font-bold text-white tracking-tight">
-              Ingestion & Relay Volume
-            </h3>
-            <p className="text-xs text-zinc-400">
-              Live webhook traffic over the selected {period} window.
-            </p>
+          <div className="flex items-center space-x-2">
+            <BarChart3 className="w-4 h-4 text-emerald-400" />
+            <h3 className="text-sm font-bold text-white">Event Ingestion Throughput</h3>
+          </div>
+          <div className="flex bg-zinc-950 p-1 rounded-xl border border-zinc-800 text-[10px] font-mono">
+            {(['1h', '24h', '7d', '30d'] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setPeriod(p)}
+                className={`px-2.5 py-0.5 rounded-lg transition-colors ${
+                  period === p ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-500'
+                }`}
+              >
+                {p}
+              </button>
+            ))}
           </div>
         </div>
 
-        <div className="h-64 w-full pt-4">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={timeseries}>
-              <defs>
-                <linearGradient id="colorThroughput" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-              <XAxis
-                dataKey="bucket"
-                stroke="#71717a"
-                fontSize={10}
-                tickFormatter={(val) => val.split(' ')[1] || val}
-              />
-              <YAxis stroke="#71717a" fontSize={10} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#09090b',
-                  borderColor: '#27272a',
-                  borderRadius: '0.75rem',
-                  fontSize: '0.75rem',
-                  color: '#fff',
-                }}
-              />
-              <Area
-                type="monotone"
-                dataKey="value"
-                name="Events Ingested"
-                stroke="#10b981"
-                strokeWidth={2}
-                fillOpacity={1}
-                fill="url(#colorThroughput)"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+        <div className="h-64 w-full">
+          {chartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData}>
+                <defs>
+                  <linearGradient id="eventGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" opacity={0.5} />
+                <XAxis dataKey="time" stroke="#71717a" fontSize={10} tickLine={false} />
+                <YAxis stroke="#71717a" fontSize={10} tickLine={false} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#09090b',
+                    borderColor: '#27272a',
+                    borderRadius: '12px',
+                    fontSize: '11px',
+                    color: '#fff',
+                  }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="events"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  fillOpacity={1}
+                  fill="url(#eventGradient)"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-full flex items-center justify-center text-xs text-zinc-500 font-mono">
+              No throughput traffic recorded in this period.
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Recent Ingested Events */}
-      <div className="p-6 rounded-2xl bg-[#121215] border border-zinc-800 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-bold text-white tracking-tight">Recent Ingested Events</h3>
-          <button
-            onClick={() => navigate('/events')}
-            className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center space-x-1"
-          >
-            <span>View all events</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+      {/* Recent Events & Deliveries Split */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Recent Events */}
+        <div className="p-6 rounded-3xl bg-[#0e0e11] border border-zinc-800 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-white">Recent Ingested Events</h3>
+            <Link to="/dashboard/events" className="text-xs text-emerald-400 hover:underline">
+              View all →
+            </Link>
+          </div>
+
+          <div className="divide-y divide-zinc-800/60">
+            {recentEvents.map((evt) => (
+              <div
+                key={evt.id}
+                onClick={() => navigate(`/dashboard/events/${evt.id}`)}
+                className="py-3 flex items-center justify-between hover:bg-zinc-900/40 cursor-pointer rounded-lg px-2 transition-colors text-xs"
+              >
+                <div className="space-y-0.5">
+                  <div className="font-mono font-bold text-white">{evt.event_type}</div>
+                  <div className="text-[11px] font-mono text-zinc-500">{evt.id.slice(0, 16)}...</div>
+                </div>
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  {evt.status}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-zinc-800 text-zinc-500 font-mono text-[10px] uppercase">
-                <th className="py-2.5 px-3">Event Type</th>
-                <th className="py-2.5 px-3">Event ID</th>
-                <th className="py-2.5 px-3">Status</th>
-                <th className="py-2.5 px-3">Received At</th>
-                <th className="py-2.5 px-3 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800/60 font-mono">
-              {recentEvents.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-6 text-center text-zinc-500 italic">
-                    No webhook events recorded in this window.
-                  </td>
-                </tr>
-              ) : (
-                recentEvents.slice(0, 5).map((evt) => (
-                  <tr
-                    key={evt.id}
-                    onClick={() => navigate(`/events/${evt.id}`)}
-                    className="hover:bg-zinc-900/40 cursor-pointer transition-colors"
-                  >
-                    <td className="py-2.5 px-3 font-bold text-white">{evt.event_type}</td>
-                    <td className="py-2.5 px-3 text-zinc-400">{evt.id.slice(0, 16)}...</td>
-                    <td className="py-2.5 px-3">
-                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold uppercase">
-                        {evt.status || 'Ingested'}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-zinc-400">
-                      {new Date(evt.received_at || evt.created_at).toLocaleTimeString()}
-                    </td>
-                    <td className="py-2.5 px-3 text-right text-zinc-500 hover:text-white">
-                      Inspect &rarr;
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+        {/* Quarantined DLQ or Destinations */}
+        <div className="p-6 rounded-3xl bg-[#0e0e11] border border-zinc-800 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-white">Dead Letter Queue (Quarantine)</h3>
+            <Link to="/dashboard/dlq" className="text-xs text-emerald-400 hover:underline">
+              View DLQ →
+            </Link>
+          </div>
+
+          {dlqItems.length === 0 ? (
+            <div className="py-8 text-center text-xs text-zinc-500 space-y-1">
+              <CheckCircle2 className="w-8 h-8 text-emerald-500/40 mx-auto" />
+              <p>No dead-lettered deliveries. All systems healthy.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-zinc-800/60">
+              {dlqItems.map((item) => (
+                <div
+                  key={item.delivery_id}
+                  onClick={() => navigate('/dashboard/dlq')}
+                  className="py-3 flex items-center justify-between hover:bg-zinc-900/40 cursor-pointer rounded-lg px-2 transition-colors text-xs"
+                >
+                  <div className="space-y-0.5">
+                    <div className="font-mono font-bold text-rose-400">{item.event_type}</div>
+                    <div className="text-[11px] text-zinc-500">{item.last_error || 'Retry budget exhausted'}</div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                    Failed
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

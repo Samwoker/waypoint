@@ -7,6 +7,9 @@ import { Sidebar } from './components/layout/Sidebar';
 import { ToastProvider } from './context/ToastContext';
 import { DocsLandingPage } from './docs/pages/DocsLandingPage';
 import { DocDetailPage } from './docs/pages/DocDetailPage';
+import { LandingPage } from './pages/public/LandingPage';
+import { PricingPage } from './pages/public/PricingPage';
+import { FeaturesPage } from './pages/public/FeaturesPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { AuthPage } from './pages/AuthPage';
 import { DeliveriesPage } from './pages/DeliveriesPage';
@@ -24,11 +27,14 @@ import { SubscriptionDetailPage } from './pages/SubscriptionDetailPage';
 import { SubscriptionsPage } from './pages/SubscriptionsPage';
 import { TenantSettingsPage } from './pages/TenantSettingsPage';
 import { TransformationsPage } from './pages/TransformationsPage';
+import { UsagePage } from './pages/dashboard/UsagePage';
+import { BillingPage } from './pages/dashboard/BillingPage';
 import { useAppDispatch, useAppSelector } from './store/hooks';
 import { checkAuthRequest } from './store/slices/authSlice';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, token, isLoading } = useAppSelector((state) => state.auth);
+  const location = useLocation();
 
   if (isLoading) {
     return (
@@ -39,46 +45,18 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!token && !user) {
-    return <Navigate to="/login" replace />;
+    // Preserve requested target URL: e.g. /login?redirect=/dashboard/api-keys
+    const redirectTarget = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/login?redirect=${redirectTarget}`} replace />;
   }
 
   return <>{children}</>;
 }
 
-function AppLayout() {
-  const dispatch = useAppDispatch();
-  const location = useLocation();
+function AuthenticatedDashboardLayout() {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [isSendModalOpen, setIsSendModalOpen] = useState<boolean>(false);
 
-  useEffect(() => {
-    dispatch(checkAuthRequest());
-  }, [dispatch]);
-
-  const isAuthRoute = location.pathname === '/login' || location.pathname === '/register';
-  const isDocsRoute = location.pathname.startsWith('/docs');
-
-  // Unauthenticated Auth Portal
-  if (isAuthRoute) {
-    return (
-      <Routes>
-        <Route path="/login" element={<AuthPage />} />
-        <Route path="/register" element={<AuthPage />} />
-      </Routes>
-    );
-  }
-
-  // Public Developer Documentation Portal
-  if (isDocsRoute) {
-    return (
-      <Routes>
-        <Route path="/docs" element={<DocsLandingPage />} />
-        <Route path="/docs/*" element={<DocDetailPage />} />
-      </Routes>
-    );
-  }
-
-  // Authenticated Tenant Dashboard
   return (
     <div className="flex min-h-screen bg-[#09090b] text-zinc-100 font-sans antialiased">
       {/* Sidebar navigation */}
@@ -91,7 +69,7 @@ function AppLayout() {
           <Routes>
             {/* OVERVIEW */}
             <Route
-              path="/"
+              path="/dashboard"
               element={
                 <ProtectedRoute>
                   <OverviewPage onOpenSendModal={() => setIsSendModalOpen(true)} />
@@ -99,7 +77,7 @@ function AppLayout() {
               }
             />
             <Route
-              path="/dashboard"
+              path="/dashboard/overview"
               element={
                 <ProtectedRoute>
                   <OverviewPage onOpenSendModal={() => setIsSendModalOpen(true)} />
@@ -117,7 +95,23 @@ function AppLayout() {
               }
             />
             <Route
+              path="/dashboard/sources"
+              element={
+                <ProtectedRoute>
+                  <SourcesPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/sources/:id"
+              element={
+                <ProtectedRoute>
+                  <SourceDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/sources/:id"
               element={
                 <ProtectedRoute>
                   <SourceDetailPage />
@@ -133,7 +127,23 @@ function AppLayout() {
               }
             />
             <Route
+              path="/dashboard/events"
+              element={
+                <ProtectedRoute>
+                  <EventsPage onOpenSendModal={() => setIsSendModalOpen(true)} />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/events/:id"
+              element={
+                <ProtectedRoute>
+                  <EventDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/events/:id"
               element={
                 <ProtectedRoute>
                   <EventDetailPage />
@@ -151,7 +161,23 @@ function AppLayout() {
               }
             />
             <Route
+              path="/dashboard/destinations"
+              element={
+                <ProtectedRoute>
+                  <DestinationsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/destinations/:id"
+              element={
+                <ProtectedRoute>
+                  <DestinationDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/destinations/:id"
               element={
                 <ProtectedRoute>
                   <DestinationDetailPage />
@@ -167,7 +193,23 @@ function AppLayout() {
               }
             />
             <Route
+              path="/dashboard/subscriptions"
+              element={
+                <ProtectedRoute>
+                  <SubscriptionsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/subscriptions/:id"
+              element={
+                <ProtectedRoute>
+                  <SubscriptionDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/subscriptions/:id"
               element={
                 <ProtectedRoute>
                   <SubscriptionDetailPage />
@@ -183,7 +225,23 @@ function AppLayout() {
               }
             />
             <Route
+              path="/dashboard/deliveries"
+              element={
+                <ProtectedRoute>
+                  <DeliveriesPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/deliveries/:id"
+              element={
+                <ProtectedRoute>
+                  <DeliveryDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/deliveries/:id"
               element={
                 <ProtectedRoute>
                   <DeliveryDetailPage />
@@ -198,10 +256,60 @@ function AppLayout() {
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/dashboard/dlq"
+              element={
+                <ProtectedRoute>
+                  <DlqPage />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* SUBSCRIPTION, USAGE & BILLING */}
+            <Route
+              path="/usage"
+              element={
+                <ProtectedRoute>
+                  <UsagePage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/usage"
+              element={
+                <ProtectedRoute>
+                  <UsagePage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/billing"
+              element={
+                <ProtectedRoute>
+                  <BillingPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/billing"
+              element={
+                <ProtectedRoute>
+                  <BillingPage />
+                </ProtectedRoute>
+              }
+            />
 
             {/* OBSERVABILITY */}
             <Route
               path="/stats"
+              element={
+                <ProtectedRoute>
+                  <StatisticsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/stats"
               element={
                 <ProtectedRoute>
                   <StatisticsPage />
@@ -219,6 +327,14 @@ function AppLayout() {
               }
             />
             <Route
+              path="/dashboard/api-keys"
+              element={
+                <ProtectedRoute>
+                  <ApiKeysPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/transformations"
               element={
                 <ProtectedRoute>
@@ -226,8 +342,32 @@ function AppLayout() {
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/dashboard/transformations"
+              element={
+                <ProtectedRoute>
+                  <TransformationsPage />
+                </ProtectedRoute>
+              }
+            />
 
-            {/* ADMIN */}
+            {/* SETTINGS */}
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute>
+                  <TenantSettingsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/settings"
+              element={
+                <ProtectedRoute>
+                  <TenantSettingsPage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/tenants"
               element={
@@ -246,7 +386,7 @@ function AppLayout() {
             />
 
             {/* Fallback */}
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </main>
       </div>
@@ -266,11 +406,66 @@ function AppLayout() {
   );
 }
 
+function MainAppRouter() {
+  const dispatch = useAppDispatch();
+  const location = useLocation();
+
+  useEffect(() => {
+    dispatch(checkAuthRequest());
+  }, [dispatch]);
+
+  const isPublicRoute =
+    location.pathname === '/' ||
+    location.pathname === '/pricing' ||
+    location.pathname === '/features';
+
+  const isDocsRoute = location.pathname.startsWith('/docs');
+  const isAuthRoute =
+    location.pathname === '/login' ||
+    location.pathname === '/signup' ||
+    location.pathname.startsWith('/auth');
+
+  // 1. PUBLIC MARKETING WEBSITE
+  if (isPublicRoute) {
+    return (
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/features" element={<FeaturesPage />} />
+      </Routes>
+    );
+  }
+
+  // 2. PUBLIC DOCUMENTATION PORTAL
+  if (isDocsRoute) {
+    return (
+      <Routes>
+        <Route path="/docs" element={<DocsLandingPage />} />
+        <Route path="/docs/*" element={<DocDetailPage />} />
+      </Routes>
+    );
+  }
+
+  // 3. AUTHENTICATION PORTAL
+  if (isAuthRoute) {
+    return (
+      <Routes>
+        <Route path="/login" element={<AuthPage />} />
+        <Route path="/signup" element={<AuthPage />} />
+        <Route path="/auth/*" element={<AuthPage />} />
+      </Routes>
+    );
+  }
+
+  // 4. AUTHENTICATED CUSTOMER DASHBOARD
+  return <AuthenticatedDashboardLayout />;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <ToastProvider>
-        <AppLayout />
+        <MainAppRouter />
       </ToastProvider>
     </BrowserRouter>
   );
